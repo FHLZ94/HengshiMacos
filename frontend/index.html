@@ -1,0 +1,91 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>衡势</title>
+  <link rel="stylesheet" href="style.css">
+  <script defer src="chart.umd.min.js"></script>
+  <script defer src="lucide.min.js"></script>
+  <script defer src="app.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="topbar-main wrap">
+      <div class="brand"><img class="brand-icon" src="app-logo.png" alt=""><span>衡势</span><span class="brand-caption">市场情绪 · 估值 · 交易参考</span></div>
+      <div class="top-actions">
+        <span class="source-status" id="sourceStatus"><span class="status-dot"></span>正在读取数据</span>
+        <span class="sync-time" id="syncTime"></span>
+        <button class="icon-button" id="refreshButton" title="刷新数据" aria-label="刷新数据"><i data-lucide="refresh-cw"></i></button>
+        <button class="icon-button" id="settingsButton" title="连接设置" aria-label="连接设置"><i data-lucide="settings-2"></i></button>
+      </div>
+    </div>
+    <nav class="section-nav wrap" aria-label="板块导航">
+      <a href="#events">全球事件</a><a href="#market">情绪与资金流</a><a href="#decisions">交易参考</a><a href="#portfolio">组合与估值</a>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <section class="pulse-band" id="marketPulse" aria-label="市场总览">
+      <div class="pulse-head"><div><span class="section-index">市场即时研判</span><h1 id="pulseHeadline">正在计算市场状态</h1></div><div class="pulse-date" id="pulseDate">等待历史行情</div></div>
+      <div class="pulse-grid" id="pulseGrid"></div>
+      <div class="pulse-foot" id="pulseFoot"></div>
+    </section>
+    <section class="section" id="events">
+      <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="radio-tower"></i></span><div><span class="section-index">01 / 全球事件</span><h1>全球金融情报</h1></div></div><div class="section-aside">政策 · 公告 · 半导体龙头 · AI 算力<span id="translationStatus"></span></div></div>
+      <button type="button" class="focus-event" id="leadEvent">正在整理重要事件…</button>
+      <div class="section-toolbar">
+        <div class="search-field"><i data-lucide="search"></i><input id="eventSearch" type="search" placeholder="公司、代码或主题" aria-label="搜索事件或证券代码"></div>
+        <button type="button" class="quiet-button" id="globalSearch"><i data-lucide="globe-2"></i> 即时检索</button>
+        <select id="dateFilter" aria-label="来源发布时间范围"><option value="72h">最近 72 小时</option><option value="7d">最近 7 天</option><option value="all">全部历史</option></select>
+        <select id="topicFilter" aria-label="行业主题"><option value="all">全部主题</option><option value="holdings">我的持仓</option><option value="SMH 行业相关">SMH 行业相关</option><option value="光通信与网络">光通信与网络</option><option value="云与算力">云与算力</option><option value="存储">存储</option></select>
+        <select id="gradeFilter" aria-label="事件等级"><option value="all">全部等级</option><option>S1</option><option>S2</option><option>S3</option><option>S4</option></select>
+        <select id="directionFilter" aria-label="事件方向"><option value="all">全部方向</option><option>偏正面</option><option>中性</option><option>偏负面</option></select>
+      </div>
+      <div class="search-feedback" id="searchFeedback"></div>
+      <div class="event-layout">
+        <div class="event-list" id="eventList" role="list"></div>
+        <aside class="event-detail" id="eventDetail"><div class="empty-detail">选择一条事件查看依据与原始来源</div></aside>
+      </div>
+      <button class="subtle-command" id="showMoreEvents">查看更多事件 <i data-lucide="chevron-down"></i></button>
+    </section>
+
+    <section class="section" id="market">
+      <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="activity"></i></span><div><span class="section-index">02 / 市场状态</span><h2>情绪、资金流与短期趋势</h2></div></div><div class="section-aside">最近可得交易日 · 量价代理</div></div>
+      <div class="metric-grid" id="marketMetrics"></div>
+      <div class="market-grid">
+        <div class="chart-panel"><div class="panel-heading"><div><strong>主要 ETF 近 30 个交易日</strong><span>收盘价标准化至起点 100</span></div><div class="legend"><span class="legend-dot qqq"></span>QQQ <span class="legend-dot smh"></span>SMH <span class="legend-dot spy"></span>SPY</div></div><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>
+        <div class="flow-panel"><div class="panel-heading"><div><strong>买卖盘代理观察</strong><span>价格反应 × 成交量</span></div></div><div id="flowSignals"></div><p class="method-note">免费公开数据无法识别真实机构净买入额。此处只表示量价证据。</p></div>
+      </div>
+      <div class="table-scroll"><table class="data-table" id="trendTable"><thead><tr><th>标的</th><th>趋势</th><th>近 5 日</th><th>5 日均线</th><th>20 日均线</th><th>量比</th><th>行情日期</th></tr></thead><tbody></tbody></table></div>
+    </section>
+
+    <section class="section" id="decisions">
+      <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="crosshair"></i></span><div><span class="section-index">03 / 条件式研究</span><h2>短期交易动作参考</h2></div></div><div class="section-aside">观察期 1–5 个交易日</div></div>
+      <div class="decision-status" id="decisionStatus"></div>
+      <div class="decision-grid" id="decisionGrid"></div>
+      <div class="decision-detail" id="decisionDetail"><div class="empty-detail">选择一个标的查看确认条件与失效条件</div></div>
+    </section>
+
+    <section class="section" id="portfolio">
+      <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="briefcase-business"></i></span><div><span class="section-index">04 / 个人组合</span><h2>持仓与未来 12 个月估值</h2></div></div><div class="section-actions"><button class="quiet-button" id="editWatchlist"><i data-lucide="list-filter"></i> 编辑观察列表</button><button class="primary-button" id="addPosition"><i data-lucide="plus"></i> 录入持仓</button></div></div>
+      <div class="portfolio-summary" id="portfolioSummary"></div>
+      <div class="subsection-heading"><h3>宽基与行业基金</h3><span>行情、短期趋势与估值口径</span></div>
+      <div class="table-scroll"><table class="data-table fund-table" id="fundTable"><thead><tr><th>标的</th><th>最近报价</th><th>日涨跌</th><th>近 5 日</th><th>20 日趋势</th><th>20 日量比</th><th>前瞻市盈率</th><th>数据日期</th></tr></thead><tbody></tbody></table></div>
+      <div class="subsection-heading"><h3>个股未来估值</h3><span>按合理价相对现价的空间从高到低排序 · 缺数据的标的排在末尾</span></div>
+      <div class="table-scroll"><table class="data-table portfolio-table" id="watchTable"><thead><tr><th>标的</th><th>最近报价</th><th>日涨跌</th><th>未来四季每股盈利</th><th>估值倍数</th><th>合理价参考</th><th>相对空间</th><th>分析师一年目标价</th><th>报价时间</th></tr></thead><tbody></tbody></table></div>
+      <div class="valuation-detail" id="valuationDetail"><div class="empty-detail">选择标的查看估值依据与相关要闻</div></div>
+      <div class="subsection-heading"><h3>实际持仓</h3><span>本机保存</span></div>
+      <div class="table-scroll"><table class="data-table" id="positionTable"><thead><tr><th>标的</th><th>数量</th><th>每股成本</th><th>最近报价</th><th>持仓市值</th><th>未实现盈亏</th><th></th></tr></thead><tbody></tbody></table></div>
+      <p class="method-note">实际持仓来自你提供的截图；每股成本只显示三位小数，未实现盈亏与券商内部精度可能有几美分差异。</p>
+      <p class="method-note">合理价为市盈率不变情景：未来 12 个月每股盈利 × 当前有效市盈率。管理层未来 12 个月指引有原始链接时，按 70% 权重纳入；分析师一年目标价单独呈现。</p>
+    </section>
+  </main>
+
+  <div class="toast" id="toast" role="status" aria-live="polite"></div>
+  <dialog id="watchDialog"><form method="dialog" id="watchForm"><div class="dialog-head"><h2>编辑观察列表</h2><button type="button" class="icon-button" data-close="watchDialog" aria-label="关闭"><i data-lucide="x"></i></button></div><label>证券代码，用逗号分隔</label><textarea id="watchInput" rows="4"></textarea><div class="dialog-actions"><button type="button" class="quiet-button" data-close="watchDialog">取消</button><button type="submit" class="primary-button">保存并同步</button></div></form></dialog>
+  <dialog id="positionDialog"><form method="dialog" id="positionForm"><div class="dialog-head"><h2>录入实际持仓</h2><button type="button" class="icon-button" data-close="positionDialog" aria-label="关闭"><i data-lucide="x"></i></button></div><div class="form-grid"><label>证券代码<input id="positionTicker" required autocomplete="off"></label><label>持有数量<input id="positionQuantity" type="number" min="0.000001" step="any" required></label><label>每股成本（美元）<input id="positionCost" type="number" min="0" step="any" required></label></div><div class="dialog-actions"><button type="button" class="quiet-button" data-close="positionDialog">取消</button><button type="submit" class="primary-button">保存持仓</button></div></form></dialog>
+  <dialog id="settingsDialog"><form method="dialog"><div class="dialog-head"><h2>连接设置</h2><button type="button" class="icon-button" data-close="settingsDialog" aria-label="关闭"><i data-lucide="x"></i></button></div><div class="form-grid"><label>HTTPS 代理<input id="proxyInput" type="text" placeholder="例如 http://127.0.0.1:7890"></label><label class="checkline"><input id="autoProxy" type="checkbox"> 自动探测本地代理</label><button type="button" class="quiet-button" id="saveNetwork">保存连接</button><label>本地分析模型<input id="modelInput" type="text" placeholder="例如 qwen3:4b"></label><button type="button" class="quiet-button" id="saveModel">保存模型</button></div></form></dialog>
+  <dialog id="guidanceDialog"><form method="dialog" id="guidanceForm"><div class="dialog-head"><h2>管理层盈利指引</h2><button type="button" class="icon-button" data-close="guidanceDialog" aria-label="关闭"><i data-lucide="x"></i></button></div><p class="dialog-note">仅录入公司原始公告中的未来 12 个月每股盈利指引。若公告口径不同，请先换算并核对。</p><div class="form-grid"><label>证券代码<input id="guidanceTicker" readonly></label><label>未来 12 个月每股盈利（美元）<input id="guidanceEps" type="number" min="0.01" step="any" required></label><label>公司原始公告链接<input id="guidanceUrl" type="url" required placeholder="https://"></label></div><div class="dialog-actions"><button type="button" class="quiet-button" data-close="guidanceDialog">取消</button><button type="submit" class="primary-button">保存指引</button></div></form></dialog>
+</body>
+</html>

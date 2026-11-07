@@ -1,0 +1,36 @@
+{
+  "name": "hengshi-desktop",
+  "version": "0.5.0",
+  "private": true,
+  "packageManager": "pnpm@11.19.0",
+  "description": "衡势市场量化投研桌面应用",
+  "author": "范光旭",
+  "main": "main.cjs",
+  "scripts": {
+    "start": "electron .",
+    "check": "node --check main.cjs && node --check preload.cjs && node --check ../frontend/app.js",
+    "dist:mac": "electron-builder --mac dmg --x64 --publish never"
+  },
+  "build": {
+    "appId": "com.fangu.hengshi",
+    "productName": "衡势",
+    "asar": true,
+    "directories": {"output": "dist"},
+    "files": ["main.cjs", "preload.cjs", "package.json"],
+    "extraResources": [
+      {"from": "../frontend", "to": "frontend"},
+      {"from": "resources/backend/hengshi-backend", "to": "backend/hengshi-backend"}
+    ],
+    "artifactName": "衡势-${version}-macOS-Intel.${ext}",
+    "mac": {
+      "category": "public.app-category.finance",
+      "icon": "build/icon.icns",
+      "target": [{"target": "dmg", "arch": ["x64"]}]
+    },
+    "dmg": {"backgroundColor": "#f4f8f9", "iconSize": 96, "window": {"width": 560, "height": 390}}
+  },
+  "devDependencies": {
+    "electron": "^45.2.3",
+    "electron-builder": "^26.18.0"
+  }
+}

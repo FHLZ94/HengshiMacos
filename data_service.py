@@ -1,0 +1,555 @@
+"""Free public market sources with bounded requests and explicit source health."""
+from concurrent.futures import ThreadPoolExecutor, as_completed
+import csv
+from datetime import datetime, timezone, timedelta
+from email.utils import parsedate_to_datetime
+from io import StringIO
+from pathlib import Path
+from urllib.parse import quote
+import html
+import re
+import socket
+import sys
+import threading
+import time
+
+import feedparser
+import requests
+
+TIMEOUT = (4, 9)
+HEADERS = {'User-Agent': 'Mozilla/5.0 (compatible; NexusResearch/0.3; personal market reader)',
+           'Accept': 'application/json, application/rss+xml, application/xml, */*'}
+QUOTE_HEADERS = {**HEADERS, 'Origin': 'https://www.nasdaq.com'}
+CNN_HEADERS = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36',
+    'Referer': 'https://www.cnn.com/markets/fear-and-greed',
+    'Origin': 'https://www.cnn.com',
+    'Accept': 'application/json, text/plain, */*',
+}
+SP500_LIST = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets' / 'sp500_constituents.csv'
+NETWORK_LIMIT = threading.BoundedSemaphore(6)
+
+
+def http_get(*args, **kwargs):
+    with NETWORK_LIMIT:
+        return requests.get(*args, **kwargs)
+
+
+def http_post(*args, **kwargs):
+    with NETWORK_LIMIT:
+        return requests.post(*args, **kwargs)
+ALIASES = {
+    'ORCL': ('ORACLE',), 'MRVL': ('MARVELL',), 'LITE': ('LUMENTUM',),
+    'INTC': ('INTEL',), 'AVGO': ('BROADCOM',), 'QQQM': ('INVESCO NASDAQ 100 ETF',),
+    'SMH': ('VANECK SEMICONDUCTOR',), 'MU': ('MICRON',),
+    'NVDA': ('NVIDIA',), 'AMD': ('ADVANCED MICRO DEVICES',),
+    'TSM': ('TSMC', 'TAIWAN SEMICONDUCTOR'), 'ASML': ('ASML HOLDING',),
+    'AMAT': ('APPLIED MATERIALS',), 'KLAC': ('KLA CORPORATION', 'KLA CORP'),
+    'LRCX': ('LAM RESEARCH',), 'ARM': ('ARM HOLDINGS',),
+    'QCOM': ('QUALCOMM',), 'COHR': ('COHERENT CORP', 'COHERENT INC'),
+    'ANET': ('ARISTA NETWORKS',), 'MSFT': ('MICROSOFT',),
+    'AMZN': ('AMAZON',), 'GOOGL': ('ALPHABET', 'GOOGLE CLOUD'),
+}
+INTELLIGENCE_TICKERS = ('NVDA', 'AMD', 'TSM', 'ASML', 'AMAT', 'KLAC', 'LRCX',
+                        'ARM', 'QCOM', 'COHR', 'ANET', 'MSFT', 'AMZN', 'GOOGL')
+SMH_RELATED = frozenset(('NVDA', 'AMD', 'TSM', 'ASML', 'AMAT', 'KLAC', 'LRCX',
+                         'ARM', 'QCOM', 'AVGO', 'MRVL', 'MU', 'INTC'))
+
+
+def intelligence_topics(tickers, title=''):
+    symbols=set(tickers)
+    upper=title.upper()
+    topics=[]
+    if symbols & SMH_RELATED or any(term in upper for term in ('SEMICONDUCTOR','CHIPMAKER','CHIP MAKER')):
+        topics.append('SMH 行业相关')
+    if symbols & {'COHR','LITE','ANET'}: topics.append('光通信与网络')
+    if symbols & {'MSFT','AMZN','GOOGL','ORCL'}: topics.append('云与算力')
+    if symbols & {'MU'} or any(term in upper for term in ('SK HYNIX','SAMSUNG','HBM MEMORY')):
+        topics.append('存储')
+    return topics
+
+
+def configured_proxy(config, for_google=False):
+    explicit = (config.get('https_proxy') or config.get('http_proxy') or '').strip()
+    if explicit:
+        return {'http': explicit, 'https': explicit}
+    if for_google and config.get('auto_local_proxy', True):
+        try:
+            with socket.create_connection(('127.0.0.1', 7890), timeout=0.3):
+                return {'http': 'http://127.0.0.1:7890', 'https': 'http://127.0.0.1:7890'}
+        except OSError:
+            pass
+    return None
+
+
+def parse_date(value):
+    if not value:
+        return ''
+    try:
+        parsed = parsedate_to_datetime(value)
+    except (ValueError, TypeError, IndexError):
+        try:
+            parsed = datetime.fromisoformat(str(value).replace('Z', '+00:00'))
+        except (ValueError, TypeError):
+            return ''
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc).isoformat(timespec='seconds')
+
+
+def clean(value):
+    return ' '.join(html.unescape(re.sub(r'<[^>]+>', ' ', value or '')).split())
+
+
+def event_profile(source, title, impact):
+    text=title.casefold()
+    official=source.startswith(('Federal Reserve', 'SEC'))
+    grade={'高':'S2', '中':'S3', '低':'S4'}.get(impact,'S4')
+    if impact=='高' and any(term in text for term in ('war','bankruptcy','systemic','emergency','战争','破产')):
+        grade='S1'
+    if any(term in text for term in ('earnings','guidance','capex','财报','指引','资本开支')):
+        horizon='数周至季度'
+    elif any(term in text for term in ('fed','rate','cpi','policy','tariff','利率','政策')):
+        horizon='数日至数月'
+    else:
+        horizon='待评估'
+    return grade, ('官方来源' if official else '转载/聚合，待核验'), horizon
+
+
+def title_key(title):
+    # Google News appends the publisher name to titles across search feeds.
+    base = re.sub(r'\s+-\s+[^-]{2,65}$', '', title).casefold()
+    return re.sub(r'[^\w]+', ' ', base).strip()
+
+
+def ticker_matches(text, watchlist):
+    upper = text.upper()
+    found = []
+    for ticker in watchlist:
+        if ticker == 'DRAM':
+            continue
+        if re.search(r'(?<![A-Z0-9])' + re.escape(ticker.lstrip('^')) + r'(?![A-Z0-9])', text):
+            found.append(ticker)
+        elif any(re.search(r'(?<![A-Z0-9])' + re.escape(alias) + r'(?![A-Z0-9])', upper)
+                 for alias in ALIASES.get(ticker, ())):
+            found.append(ticker)
+    return found
+
+
+def _feed(source, url, config, sentiment_fn, impact_fn, watchlist):
+    started = time.monotonic()
+    proxy = configured_proxy(config, for_google='news.google.com' in url)
+    try:
+        response = http_get(url, timeout=TIMEOUT, headers=HEADERS, proxies=proxy)
+        response.raise_for_status()
+        parsed = feedparser.parse(response.content)
+        if parsed.bozo and not parsed.entries:
+            raise ValueError('RSS 解析失败')
+        rows = []
+        for entry in parsed.entries[:30]:
+            title = clean(entry.get('title', ''))
+            link = entry.get('link', '')
+            if not title or not link:
+                continue
+            summary = clean(entry.get('summary', ''))[:500]
+            body = title + ' ' + summary
+            score, label = sentiment_fn(body)
+            impact=impact_fn(body)
+            grade,trust,horizon=event_profile(source,title,impact)
+            publisher=clean((entry.get('source') or {}).get('title') or '')
+            rows.append({'title': title, 'summary': summary, 'link': link,
+                         'source': source, 'publisher': publisher,
+                         'published': parse_date(entry.get('published')),
+                         'impact': impact, 'grade': grade, 'credibility': trust, 'horizon': horizon,
+                         'sentiment': score, 'label': label,
+                         'tickers': ticker_matches(body, watchlist)})
+        return rows, {'source': source, 'status': 'ok', 'count': len(rows),
+                      'latency_ms': round((time.monotonic()-started)*1000), 'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+    except requests.Timeout:
+        reason = '连接超时'
+    except requests.HTTPError as exc:
+        reason = f'HTTP {exc.response.status_code}' if exc.response is not None else 'HTTP 错误'
+    except requests.RequestException as exc:
+        reason = type(exc).__name__
+    except Exception as exc:
+        reason = type(exc).__name__
+    return [], {'source': source, 'status': 'error', 'count': 0, 'reason': reason,
+                'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+def fetch_news(watchlist, feeds, config, sentiment_fn, impact_fn):
+    sources = list(feeds)
+    coverage=list(dict.fromkeys([*watchlist,*INTELLIGENCE_TICKERS]))
+    for ticker in watchlist:
+        if ticker.startswith('^'):
+            continue
+        query = quote(f'"{ticker}" stock OR {ticker} company')
+        sources.append((f'Google News · {ticker}', f'https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en'))
+    all_rows, health = [], []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_feed, name, url, config, sentiment_fn, impact_fn, coverage) for name, url in sources]
+        for future in as_completed(futures):
+            rows, state = future.result()
+            all_rows.extend(rows)
+            health.append(state)
+    unique = {}
+    for row in all_rows:
+        key = title_key(row['title']) or row['link']
+        old = unique.get(key)
+        publisher=row.get('publisher') or (row['source'] if not row['source'].startswith('Google News') else '')
+        if old is None:
+            unique[key]={**row,'independent_publishers':[publisher] if publisher else []}
+            continue
+        publishers=set(old.get('independent_publishers') or [])
+        if publisher:publishers.add(publisher)
+        if (row['published'], len(row['tickers'])) > (old['published'], len(old['tickers'])):
+            unique[key]={**row,'independent_publishers':sorted(publishers)}
+        else:
+            old['independent_publishers']=sorted(publishers)
+    rank = {'高': 3, '中': 2, '低': 1}
+    rows = sorted(unique.values(), key=lambda row: (row['published'],rank[row['impact']]), reverse=True)
+    return rows[:400], sorted(health, key=lambda x:x['source'])
+
+
+def search_news(query, config, sentiment_fn, impact_fn, watchlist):
+    query=' '.join(str(query).split())[:120]
+    if len(query)<2:
+        return [],{'source':'即时检索','status':'error','count':0,'reason':'至少输入两个字符'}
+    url=f'https://news.google.com/rss/search?q={quote(query)}&hl=en-US&gl=US&ceid=US:en'
+    coverage=list(dict.fromkeys([*watchlist,*INTELLIGENCE_TICKERS]))
+    return _feed(f'即时检索 · {query}',url,config,sentiment_fn,impact_fn,coverage)
+
+
+def _quote(ticker, config):
+    started = time.monotonic()
+    if ticker == 'DRAM':
+        return None, {'source': 'DRAM', 'status': 'unresolved', 'reason': '需确认具体证券代码'}
+    if ticker == '^VIX':
+        try:
+            response = http_get('https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS',
+                                    timeout=TIMEOUT, headers=HEADERS, proxies=configured_proxy(config))
+            response.raise_for_status()
+            values = [(item.get('observation_date') or item.get('DATE'),float(item['VIXCLS']))
+                      for item in csv.DictReader(StringIO(response.text))
+                      if item.get('VIXCLS') not in ('', '.')]
+            if len(values)<2: raise ValueError('VIX 序列为空')
+            date, price = values[-1]
+            row = {'ticker':ticker,'name':'CBOE VIX (FRED)','exchange':'CBOE', 'price':price,
+                   'change':(price/values[-2][1]-1)*100, 'asof':date,
+                   'fetched_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'source':'FRED'}
+            return row, {'source':ticker,'status':'ok','count':1,'checked_at':row['fetched_at']}
+        except (requests.RequestException,ValueError,KeyError,ZeroDivisionError) as exc:
+            return None, {'source':ticker,'status':'error','reason':type(exc).__name__,
+                          'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+    if ticker.startswith('^'):
+        return None, {'source': ticker, 'status': 'unsupported', 'reason': '不支持此指数'}
+    kind = 'etf' if ticker in ('SMH', 'QQQM', 'QQQ', 'SPY') else 'stocks'
+    url = f'https://api.nasdaq.com/api/quote/{quote(ticker)}/info?assetclass={kind}'
+    try:
+        try:
+            response = http_get(url, timeout=TIMEOUT, headers=QUOTE_HEADERS,
+                                    proxies=configured_proxy(config))
+        except requests.Timeout:
+            time.sleep(0.3)
+            response = http_get(url, timeout=TIMEOUT, headers=QUOTE_HEADERS,
+                                    proxies=configured_proxy(config))
+        response.raise_for_status()
+        data = response.json().get('data')
+        if not data or not data.get('primaryData'):
+            raise ValueError('代码无报价')
+        primary = data['primaryData']
+        price = float(re.sub(r'[^0-9.\-]', '', primary['lastSalePrice']))
+        change = float(re.sub(r'[^0-9.\-]', '', primary['percentageChange']))
+        row = {'ticker': ticker, 'name': data.get('companyName', ticker), 'exchange': data.get('exchange', ''),
+               'price': price, 'change': change, 'asof': primary.get('lastTradeTimestamp',''),
+               'fetched_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'source': 'Nasdaq',
+               'market_status':data.get('marketStatus',''),'is_realtime':bool(primary.get('isRealTime')),
+               'price_label':'最近成交' if primary.get('isRealTime') else '延迟最近成交'}
+        try:
+            summary_url=f'https://api.nasdaq.com/api/quote/{quote(ticker)}/summary?assetclass={kind}'
+            summary=http_get(summary_url,timeout=TIMEOUT,headers=QUOTE_HEADERS,
+                                 proxies=configured_proxy(config,for_google=True))
+            summary.raise_for_status()
+            values=(summary.json().get('data') or {}).get('summaryData') or {}
+            target_raw=(values.get('OneYrTarget') or {}).get('value')
+            if target_raw and target_raw!='N/A':
+                target=float(re.sub(r'[^0-9.]','',target_raw))
+                if target>0:
+                    row['target_price']=target
+                    row['target_source']='Nasdaq 1 Year Target'
+                    row['target_fetched_at']=row['fetched_at']
+            volume_raw=primary.get('volume') or ''
+            average_raw=(values.get('AverageVolume') or {}).get('value') or ''
+            volume=float(re.sub(r'[^0-9.]','',volume_raw)) if volume_raw else 0
+            avg=float(re.sub(r'[^0-9.]','',average_raw)) if average_raw else 0
+            if avg>0:
+                row['volume_ratio']=round(volume/avg,2)
+                row['volume']=int(volume)
+                row['average_volume']=int(avg)
+        except (requests.RequestException,ValueError,TypeError,AttributeError,KeyError):
+            pass
+        return row, {'source': ticker, 'status': 'ok', 'count': 1,
+                     'latency_ms': round((time.monotonic()-started)*1000), 'checked_at': row['fetched_at']}
+    except requests.Timeout:
+        reason = '连接超时'
+    except requests.HTTPError as exc:
+        reason = f'HTTP {exc.response.status_code}' if exc.response is not None else 'HTTP 错误'
+    except (ValueError, KeyError, TypeError) as exc:
+        reason = str(exc)[:70]
+    except requests.RequestException as exc:
+        reason = type(exc).__name__
+    return None, {'source': ticker, 'status': 'error', 'reason': reason,
+                  'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+def fetch_quotes(watchlist, config):
+    rows, health = [], []
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        futures = [pool.submit(_quote, ticker, config) for ticker in watchlist]
+        for future in as_completed(futures):
+            row, state = future.result()
+            if row:
+                rows.append(row)
+            health.append(state)
+    order = {ticker: i for i, ticker in enumerate(watchlist)}
+    return sorted(rows, key=lambda row: order[row['ticker']]), sorted(health, key=lambda x:order[x['source']])
+
+
+def _estimate(ticker, config):
+    if ticker in ('DRAM','SMH','QQQM','QQQ','SPY') or ticker.startswith('^'):
+        return None, {'source':'EPS '+ticker,'status':'unsupported','reason':'基金/指数或代码未确认'}
+    try:
+        url=f'https://api.nasdaq.com/api/analyst/{quote(ticker)}/earnings-forecast'
+        response=http_get(url,timeout=(5,15),headers=QUOTE_HEADERS,proxies=configured_proxy(config))
+        response.raise_for_status()
+        data=response.json().get('data') or {}
+        periods=(data.get('quarterlyForecast') or {}).get('rows') or []
+        forecast=select_ntm_forecast(periods)
+        if not forecast: raise ValueError('未来四季 EPS 预期不足')
+        fetched=datetime.now(timezone.utc).isoformat(timespec='seconds')
+        row={'ticker':ticker,**forecast,'fetched_at':fetched,
+             'source':'Nasdaq 分析师季度一致预期','basis':'ntm_4q'}
+        return row,{'source':'EPS '+ticker,'status':'ok','count':1,'checked_at':fetched}
+    except (requests.RequestException,ValueError,TypeError,KeyError) as exc:
+        return None,{'source':'EPS '+ticker,'status':'error','reason':type(exc).__name__,
+                     'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+def fetch_estimates(watchlist, config):
+    rows,health=[],[]
+    symbols=[ticker for ticker in watchlist
+             if ticker not in ('DRAM','SMH','QQQM','QQQ','SPY') and not ticker.startswith('^')]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures=[pool.submit(_estimate,ticker,config) for ticker in symbols]
+        for future in as_completed(futures):
+            row,state=future.result()
+            if row: rows.append(row)
+            health.append(state)
+    order={ticker:i for i,ticker in enumerate(watchlist)}
+    return sorted(rows,key=lambda row:order[row['ticker']]),sorted(health,key=lambda row:order[row['source'].removeprefix('EPS ')])
+
+
+def select_ntm_forecast(periods, now=None):
+    now=now or datetime.now(timezone.utc)
+    valid=[]
+    for row in periods:
+        try:
+            end=datetime.strptime(row['fiscalEnd'],'%b %Y').replace(tzinfo=timezone.utc)
+            eps=float(row['consensusEPSForecast'])
+            if end.year < now.year or (end.year==now.year and end.month<now.month):
+                continue
+            valid.append((end,row,eps))
+        except (ValueError,KeyError,TypeError):
+            continue
+    valid.sort(key=lambda item:item[0])
+    selected=valid[:4]
+    if len(selected)!=4 or any(item[2]<=0 for item in selected):
+        return None
+    months=[item[0].year*12+item[0].month for item in selected]
+    if any(right-left not in (2,3,4) for left,right in zip(months,months[1:])):
+        return None
+    rows=[item[1] for item in selected]
+    return {'period':f"{rows[0]['fiscalEnd']} - {rows[-1]['fiscalEnd']}",
+            'eps':round(sum(item[2] for item in selected),4),
+            'analysts':min((int(row.get('noOfEstimates') or 0) for row in rows),default=0),
+            'revisions_up':sum(int(row.get('up') or 0) for row in rows),
+            'revisions_down':sum(int(row.get('down') or 0) for row in rows)}
+
+
+def _history(ticker, config):
+    if ticker=='^VIX':
+        try:
+            response=http_get('https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS',
+                                  timeout=(5,18),headers=HEADERS,proxies=configured_proxy(config))
+            response.raise_for_status()
+            start=(datetime.now(timezone.utc)-timedelta(days=1450)).date().isoformat()
+            bars=[{'date':item.get('observation_date') or item.get('DATE'),
+                   'close':float(item['VIXCLS'])}
+                  for item in csv.DictReader(StringIO(response.text))
+                  if item.get('VIXCLS') not in ('','.') and (item.get('observation_date') or item.get('DATE') or '')>=start]
+            if len(bars)<200:raise ValueError('VIX 历史不足')
+            checked=datetime.now(timezone.utc).isoformat(timespec='seconds')
+            return ({'ticker':ticker,'bars':bars,'fetched_at':checked,'source':'FRED VIX'},
+                    {'source':'历史 '+ticker,'status':'ok','count':len(bars),'checked_at':checked})
+        except (requests.RequestException,ValueError,KeyError) as exc:
+            return None,{'source':'历史 '+ticker,'status':'error','reason':type(exc).__name__,
+                         'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+    if ticker=='DRAM' or ticker.startswith('^'):
+        return None,{'source':'历史 '+ticker,'status':'unsupported','reason':'不支持此代码'}
+    kind='etf' if ticker in ('SMH','QQQM','QQQ','SPY','IWM','RSP','XLF','XLE','XLI','XLY') else 'stocks'
+    now=datetime.now(timezone.utc)
+    market=ticker in ('QQQ','SMH','SPY')
+    start=(now-timedelta(days=1450 if market else 190)).date().isoformat()
+    end=now.date().isoformat()
+    url=f'https://api.nasdaq.com/api/quote/{quote(ticker)}/historical?assetclass={kind}&fromdate={start}&todate={end}&limit={1100 if market else 140}'
+    try:
+        response=http_get(url,headers=QUOTE_HEADERS,timeout=(5,15),
+                              proxies=configured_proxy(config,for_google=True))
+        response.raise_for_status()
+        data=response.json().get('data') or {}
+        raw=((data.get('tradesTable') or {}).get('rows') or [])
+        bars=[]
+        for item in raw:
+            try:
+                bars.append({'date':datetime.strptime(item['date'],'%m/%d/%Y').date().isoformat(),
+                             'open':float(item['open'].replace(',','').replace('$','')),
+                             'high':float(item['high'].replace(',','').replace('$','')),
+                             'low':float(item['low'].replace(',','').replace('$','')),
+                             'close':float(item['close'].replace(',','').replace('$','')),
+                             'volume':int(item['volume'].replace(',',''))})
+            except (ValueError,KeyError,TypeError,AttributeError):
+                continue
+        bars.sort(key=lambda item:item['date'])
+        if len(bars)<21: raise ValueError('历史样本不足 21 日')
+        checked=now.isoformat(timespec='seconds')
+        return ({'ticker':ticker,'bars':bars,'fetched_at':checked,'source':'Nasdaq Historical'},
+                {'source':'历史 '+ticker,'status':'ok','count':len(bars),'checked_at':checked})
+    except (requests.RequestException,ValueError,TypeError) as exc:
+        return None,{'source':'历史 '+ticker,'status':'error','reason':type(exc).__name__,
+                     'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+def fetch_histories(watchlist, config):
+    rows,health=[],[]
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures=[pool.submit(_history,ticker,config) for ticker in watchlist]
+        for future in as_completed(futures):
+            row,state=future.result()
+            if row: rows.append(row)
+            health.append(state)
+    order={ticker:i for i,ticker in enumerate(watchlist)}
+    return sorted(rows,key=lambda row:order[row['ticker']]),sorted(health,key=lambda row:order[row['source'].removeprefix('历史 ')])
+
+
+def reconcile_closed_quotes(quotes, histories):
+    history_map={row['ticker']:row.get('bars') or [] for row in histories}
+    result=[]
+    for quote_row in quotes:
+        updated=dict(quote_row)
+        bars=history_map.get(updated['ticker'],[])
+        if updated.get('market_status')=='Closed' and len(bars)>=2:
+            try:
+                quote_date=datetime.strptime(updated['asof'],'%b %d, %Y').date().isoformat()
+            except (TypeError,ValueError):
+                quote_date=updated.get('asof','')
+            if bars[-1]['date']==quote_date and bars[-2]['close']>0:
+                updated['price']=round(float(bars[-1]['close']),4)
+                updated['change']=round((updated['price']/bars[-2]['close']-1)*100,4)
+                updated['price_label']='最近收盘'
+                updated['price_source_detail']='Nasdaq 历史日线与报价日期核对'
+        result.append(updated)
+    return result
+
+
+TRADINGVIEW_SYMBOLS={
+    'QQQ':'NASDAQ:QQQ','SPY':'AMEX:SPY','QQQM':'NASDAQ:QQQM','SMH':'NASDAQ:SMH',
+    'ORCL':'NYSE:ORCL','MRVL':'NASDAQ:MRVL','MU':'NASDAQ:MU','LITE':'NASDAQ:LITE',
+    'INTC':'NASDAQ:INTC','AVGO':'NASDAQ:AVGO',
+}
+
+
+def fetch_comparison(watchlist,config):
+    symbols=[TRADINGVIEW_SYMBOLS[ticker] for ticker in watchlist if ticker in TRADINGVIEW_SYMBOLS]
+    if not symbols:return [],{'source':'TradingView 交叉核对','status':'unsupported','reason':'无可核对代码'}
+    payload={'symbols':{'tickers':symbols},
+             'columns':['name','close','earnings_per_share_forecast_next_fy','price_earnings_ttm']}
+    try:
+        response=http_post('https://scanner.tradingview.com/america/scan',json=payload,
+                               headers=HEADERS,timeout=(5,15),proxies=configured_proxy(config,for_google=True))
+        response.raise_for_status()
+        entries=response.json().get('data') or []
+        reverse={symbol:ticker for ticker,symbol in TRADINGVIEW_SYMBOLS.items()}
+        checked=datetime.now(timezone.utc).isoformat(timespec='seconds')
+        rows=[]
+        for entry in entries:
+            ticker=reverse.get(entry.get('s'))
+            values=entry.get('d') or []
+            if not ticker or len(values)<4:continue
+            rows.append({'ticker':ticker,'price':values[1],
+                         'next_fy_eps':values[2],'trailing_pe':values[3],
+                         'fetched_at':checked,'source':'TradingView Scanner'})
+        return rows,{'source':'TradingView 交叉核对','status':'ok','count':len(rows),'checked_at':checked}
+    except (requests.RequestException,ValueError,KeyError,TypeError) as exc:
+        return [],{'source':'TradingView 交叉核对','status':'error','reason':type(exc).__name__,
+                   'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+def fetch_cnn_fear_greed(config):
+    source='CNN 恐慌贪婪指数'
+    try:
+        response=http_get('https://production.dataviz.cnn.io/index/fearandgreed/graphdata',
+                          headers=CNN_HEADERS,proxies=configured_proxy(config,for_google=True),timeout=(5,12))
+        response.raise_for_status()
+        data=response.json().get('fear_and_greed') or {}
+        score=float(data['score'])
+        timestamp=parse_date(data.get('timestamp'))
+        if not 0<=score<=100 or not timestamp:
+            raise ValueError('CNN 数据缺少有效得分或时间')
+        result={'score':round(score,1),'rating':data.get('rating',''),
+                'asof':timestamp,'source':source,'url':'https://www.cnn.com/markets/fear-and-greed',
+                'fetched_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+        return result,{'source':source,'status':'ok','count':1,'checked_at':result['fetched_at']}
+    except (requests.RequestException,ValueError,TypeError,KeyError) as exc:
+        return None,{'source':source,'status':'error','reason':type(exc).__name__,
+                     'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+def calculate_sp500_breadth(data, expected_count):
+    seen={}
+    for entry in data:
+        values=entry.get('d') or []
+        if len(values)<3 or not isinstance(values[1],(float,int)) or not isinstance(values[2],(float,int)):
+            continue
+        ticker=values[0]
+        if isinstance(ticker,str) and ticker and values[1]>0 and values[2]>0:
+            seen[ticker]=(values[1],values[2])
+    valid=len(seen)
+    if valid<max(350,int(expected_count*.85)):
+        raise ValueError(f'标普成分覆盖不足：{valid}/{expected_count}')
+    above=sum(price>average for price,average in seen.values())
+    return {'above_20d':above,'valid':valid,'ratio_pct':round(above/valid*100,1),
+            'expected':expected_count,'below_or_equal_20d':valid-above}
+
+
+def fetch_sp500_breadth(config):
+    source='标普500 20日参与度'
+    try:
+        with SP500_LIST.open(encoding='utf-8-sig',newline='') as stream:
+            tickers=[row['Symbol'].strip().replace('.','-')
+                     for row in csv.DictReader(stream) if row.get('Symbol')]
+        if len(tickers)<450:
+            raise ValueError('标普成分名单不足')
+        candidates=[exchange+ticker for ticker in tickers for exchange in ('NYSE:','NASDAQ:')]
+        response=http_post('https://scanner.tradingview.com/america/scan',
+                           json={'symbols':{'tickers':candidates},'columns':['name','close','SMA20']},
+                           timeout=(5,20),proxies=configured_proxy(config,for_google=True),headers=HEADERS)
+        response.raise_for_status()
+        result=calculate_sp500_breadth(response.json().get('data') or [],len(tickers))
+        result.update({'source':source,'constituents_source':'datasets/s-and-p-500-companies',
+                       'constituents_snapshot_date':'2026-11-08',
+                       'fetched_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),
+                       'price_source':'TradingView Scanner'})
+        return result,{'source':source,'status':'ok','count':result['valid'],'checked_at':result['fetched_at']}
+    except (OSError,requests.RequestException,ValueError,TypeError,KeyError) as exc:
+        return None,{'source':source,'status':'error','reason':type(exc).__name__,
+                     'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}

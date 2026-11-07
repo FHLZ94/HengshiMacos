@@ -1,0 +1,60 @@
+name: 构建衡势 Intel Mac 安装包
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-intel-dmg:
+    runs-on: macos-15-intel
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          architecture: x64
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - uses: pnpm/action-setup@v4
+        with:
+          version: '11.19.0'
+      - name: 安装后端依赖
+        run: python -m pip install -r requirements-backend.txt
+      - name: 验证分析与数据契约
+        run: >-
+          python -m unittest
+          tests.test_data_service tests.test_market_model tests.test_market_view
+          tests.test_signals tests.test_translation_service tests.test_valuation_history
+          tests.test_valuation tests.test_event_intelligence tests.test_desktop_state
+      - name: 构建 Intel 后端
+        run: >-
+          python -m PyInstaller --noconfirm --clean --onefile --console
+          --target-arch x86_64 --name hengshi-backend
+          --add-data assets/sp500_constituents.csv:assets electron_backend.py
+      - name: 准备 Electron 资源
+        run: |
+          mkdir -p electron/resources/backend electron/build
+          cp dist/hengshi-backend electron/resources/backend/hengshi-backend
+          chmod +x electron/resources/backend/hengshi-backend
+          python -c "from build_macos_intel import make_icon; make_icon()"
+          cp nexus.icns electron/build/icon.icns
+      - name: 安装 Electron 依赖
+        working-directory: electron
+        run: pnpm install --frozen-lockfile
+      - name: 检查前端与主进程
+        working-directory: electron
+        run: pnpm run check
+      - name: 构建 Intel DMG
+        working-directory: electron
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+        run: pnpm run dist:mac
+      - uses: actions/upload-artifact@v4
+        with:
+          name: 衡势-macOS-Intel-DMG
+          path: electron/dist/*.dmg
+          if-no-files-found: error

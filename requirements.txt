@@ -1,0 +1,6 @@
+feedparser>=6.0.11
+requests>=2.32.0
+pyinstaller>=6.11.0
+pywebview>=6.2.1,<7
+trafilatura>=2.3,<3
+googlenewsdecoder>=0.2,<1
