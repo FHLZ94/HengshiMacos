@@ -16,7 +16,7 @@ jobs:
             arch: x64
             pyarch: x86_64
             artifact: 衡势-1.1.0-macOS-Intel.dmg
-          - runner: macos-14
+          - runner: macos-15
             arch: arm64
             pyarch: arm64
             artifact: 衡势-1.1.0-macOS-Apple-Silicon.dmg
