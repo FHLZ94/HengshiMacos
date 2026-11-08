@@ -2,7 +2,7 @@
 
 出品：范光旭。版本：1.1.0。仓库：FHLZ94/HengshiMacos。
 
-衡势使用免费公开信息与本地缓存，围绕市场状态、全球事件、板块资金偏好、条件式交易参考及未来估值组织证据。Windows 使用 WebView2，Intel Mac 使用隔离的 Electron 窗口与同一套 Python 分析服务。
+衡势使用免费公开信息与本地缓存，围绕市场状态、全球事件、板块资金偏好、条件式交易参考及未来估值组织证据。Windows 使用 WebView2，Intel 与 Apple Silicon Mac 使用对应架构的隔离 Electron 窗口与同一套 Python 分析服务。
 
 ## 当前功能
 
@@ -24,16 +24,16 @@
 
 ## 安装与使用
 
-Windows 运行 `installer/衡势-安装包.exe`，按标准安装向导选择位置与桌面快捷方式。Mac Intel 安装文件为 `衡势-1.1.0-macOS-Intel.dmg`。
+Windows 运行 `installer/衡势-安装包.exe`，按标准安装向导选择位置与桌面快捷方式。Intel Mac 安装文件为 `衡势-1.1.0-macOS-Intel.dmg`；M系列 Mac 安装文件为 `衡势-1.1.0-macOS-Apple-Silicon.dmg`。
 
 Windows 用户数据目录为 `%APPDATA%/AIMarketIntelligence/`；macOS 为应用数据目录中的衡势文件夹。连接设置在右上角设置按钮。可自动探测本地代理 `127.0.0.1:7890`，也可填写显式代理。基础功能无需付费金融API或本地大模型；可选 Ollama 用于进一步分析。
 
 ## 构建与检验
 
-Python 3.11。Windows 执行 `build_windows.bat`，测试执行 `python -m unittest discover -s tests -v`。Intel Mac 可运行仓库的手动 GitHub Actions 工作流，或在对应Mac上执行 `build_macos_intel.py`；云构建保留DMG artifact，不自动创建公开Release。跨平台设置见 `README-Mac.md`。
+Python 3.11。Windows 执行 `build_windows.bat`，测试执行 `python -m unittest discover -s tests -v`。Mac 可运行仓库的手动 GitHub Actions 工作流，按架构生成 Intel 和 Apple Silicon DMG；云构建保留DMG artifact，不自动创建公开Release。跨平台设置见 `README-Mac.md`。
 
 ## 数据口径
 
 免费行情可能延迟。板块承接得分是量价代理，不代表真实机构净买入额；一年估值空间属于盈利兑现与倍数保持的情景。历史发生率、校准概率及分析师目标价分别标注，不将重叠样本当作独立年度胜率。不同会计口径的EPS与PE不直接混用，不用当前EPS回填历史估值。具体模型与既有验证见 `docs/research-0.6.0.md`，开发过程见 `衡势-Vibe-Coding-开发案例.md`。
 
-版本标识为1.1正式版。Intel DMG由macOS云构建环境生成；实体Mac验收及Apple开发者签名、公证状态单独记录。
+版本标识为1.1正式版。两个 DMG 由对应架构的 macOS 云构建环境生成；实体Mac验收及Apple开发者签名、公证状态单独记录。

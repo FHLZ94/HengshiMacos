@@ -14,7 +14,9 @@ def main():
     if token:headers['Authorization']='Bearer '+token
     response=requests.get('https://api.github.com/repos/electron/electron/releases/tags/v'+version,headers=headers,timeout=(10,30))
     if response.status_code!=200:raise RuntimeError('Official release metadata unavailable: '+str(response.status_code))
-    name=f'electron-v{version}-darwin-x64.zip'
+    arch=os.environ.get('ELECTRON_ARCH','x64').strip().lower()
+    if arch not in ('x64','arm64'):raise ValueError('Unsupported Electron architecture')
+    name=f'electron-v{version}-darwin-{arch}.zip'
     asset=next(a for a in response.json()['assets'] if a['name']==name)
     expected=asset.get('digest') or ''
     if not re.fullmatch(r'sha256:[a-f0-9]{64}',expected):raise RuntimeError('Official SHA256 digest unavailable')

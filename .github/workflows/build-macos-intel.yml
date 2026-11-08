@@ -1,4 +1,4 @@
-name: 构建衡势 Intel Mac 安装包
+name: 构建衡势 Intel 与 Apple Silicon Mac 安装包
 
 on:
   workflow_dispatch:
@@ -7,18 +7,31 @@ permissions:
   contents: read
 
 jobs:
-  build-intel-dmg:
-    runs-on: macos-15-intel
-    timeout-minutes: 45
+  build-macos-dmg:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15-intel
+            arch: x64
+            pyarch: x86_64
+            artifact: 衡势-1.1.0-macOS-Intel.dmg
+          - runner: macos-14
+            arch: arm64
+            pyarch: arm64
+            artifact: 衡势-1.1.0-macOS-Apple-Silicon.dmg
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: '3.11'
-          architecture: x64
+          architecture: ${{ matrix.arch == 'x64' && 'x64' || 'arm64' }}
       - uses: actions/setup-node@v4
         with:
           node-version: '24'
+          architecture: ${{ matrix.arch == 'x64' && 'x64' || 'arm64' }}
       - uses: pnpm/action-setup@v4
         with:
           version: '11.19.0'
@@ -31,10 +44,10 @@ jobs:
           tests.test_signals tests.test_translation_service tests.test_valuation_history
           tests.test_valuation tests.test_event_intelligence tests.test_desktop_state
           tests.test_research_revision tests.test_tracking tests.test_unified_research tests.test_intraday
-      - name: 构建 Intel 后端
+      - name: 构建 ${{ matrix.arch }} Python 后端
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile --console
-          --target-arch x86_64 --name hengshi-backend
+          --target-arch ${{ matrix.pyarch }} --name hengshi-backend
           --add-data assets/sp500_constituents.csv:assets electron_backend.py
       - name: 准备 Electron 资源
         run: |
@@ -49,17 +62,21 @@ jobs:
       - name: 检查前端与主进程
         working-directory: electron
         run: pnpm run check
-      - name: 下载并校验官方 Electron Intel 运行库
+      - name: 下载并校验官方 Electron 运行库
         env:
           GITHUB_TOKEN: ${{ github.token }}
+          ELECTRON_ARCH: ${{ matrix.arch }}
         run: python download_electron_runtime.py
-      - name: 构建 Intel DMG
+      - name: 构建 ${{ matrix.arch }} DMG
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: pnpm exec electron-builder --mac dmg --x64 --publish never --config.electronDist=resources/electron-runtime.zip
+        run: pnpm exec electron-builder --mac dmg --${{ matrix.arch }} --publish never --config.electronDist=resources/electron-runtime.zip
+      - name: 规范化 DMG 文件名
+        working-directory: electron
+        run: mv dist/*.dmg "dist/${{ matrix.artifact }}"
       - uses: actions/upload-artifact@v4
         with:
-          name: 衡势-macOS-Intel-DMG
-          path: electron/dist/*.dmg
+          name: 衡势-macOS-${{ matrix.arch }}-DMG
+          path: electron/dist/${{ matrix.artifact }}
           if-no-files-found: error
