@@ -94,19 +94,19 @@ def trading_environment(model,event_risk,metrics=None,intraday=None):
             label='跌破风险线，先控敞口';reason=f'最近报价已跌破 {invalid:.2f} 的波动调整风险位，等待支撑重建'
         elif risk['critical_negative']:
             label='先控制事件风险';reason='高影响负面事件有原始证据，超卖不足以抵消政策或盈利风险'
-        elif setup.get('overbought') and minute.get('available') and minute.get('top_confirmed_frames'):
+        elif setup.get('overbought') and minute.get('available') and minute.get('frames',{}).get('30',{}).get('top_confirmed'):
             label='高位背离，复核敞口';reason='历史高位叠加分钟级顶结构，先核对失效位与止盈条件'
         elif stage=='高位滞涨':
             label='高位滞涨，放缓追价';reason='高位价格推进不足，且出现放量或卖压分歧，等待方向重新确认'
         elif setup.get('overbought'):
             label='偏热拥挤，避免追价';reason=f"历史上侧 {setup.get('upper_tail_pct',0):.1f}%，属于价量过热代理；不等于真实持仓拥挤，也不自动代表即将下跌"
-        elif setup['oversold'] and minute.get('available') and minute.get('confirmed_frames') and minute.get('absorption')=='多周期放量承接' and data['up3_pct']>=50 and risk['risk_score']<30:
+        elif setup['oversold'] and minute.get('available') and minute.get('frames',{}).get('30',{}).get('confirmed') and minute.get('absorption')=='多周期放量承接' and data['up3_pct']>=50 and risk['risk_score']<30:
             label='结构修复，分批候选';reason='分钟级底结构与放量承接联动，先小额观察，后续仍须守住风险位'
         elif setup['oversold'] and setup['recovery_confirmed'] and data['up3_pct']>=50 and not risk['risk_score']>=30:
             label='小额分批候选';reason='进入历史低位区，且收盘位置与成交量出现修复；仍须守住失效价'
         elif setup['oversold'] and data['up3_pct']<50:
             label='超卖但反弹参考偏弱';reason='三日上涨参考低于50%，价格低位尚未转成反弹优势，等待新确认'
-        elif setup['oversold'] and minute.get('available') and minute.get('confirmed_frames'):
+        elif setup['oversold'] and minute.get('available') and minute.get('frames',{}).get('30',{}).get('confirmed'):
             label='底结构修复，量能待确认';reason=minute['resonance']+'；当前'+minute['absorption']+'，先观察短周期能否放量守住低点'
         elif setup['oversold']:
             label='超卖观察，等待承接';reason=f"历史下侧 {setup['lower_tail_pct']:.1f}%，但持续承接尚未确认；避免一次性接满"
@@ -125,11 +125,11 @@ def trading_environment(model,event_risk,metrics=None,intraday=None):
 
 def market_stage(setup,minute=None):
     minute=minute or {}
-    if setup.get('overbought') and minute.get('available') and minute.get('top_confirmed_frames'):return '顶部背离风险'
+    if setup.get('overbought') and minute.get('available') and minute.get('frames',{}).get('30',{}).get('top_confirmed'):return '顶部背离风险'
     if setup.get('lower_tail_pct',50)>=85 and minute.get('available') and minute.get('high_stall_frames'):return '高位滞涨'
     if setup.get('extreme_overbought'):return '极端过热'
     if setup.get('overbought'):return '明显过热'
-    if setup.get('oversold') and minute.get('available') and minute.get('confirmed_frames'):
+    if setup.get('oversold') and minute.get('available') and minute.get('frames',{}).get('30',{}).get('confirmed'):
         return '放量承接增强' if minute.get('absorption')=='多周期放量承接' else '底结构修复'
     if setup.get('extreme_oversold'):return '极端超卖'
     if setup.get('oversold'):return '明显超卖'

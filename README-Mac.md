@@ -8,6 +8,6 @@ Mac 版使用 Electron 窗口和同一套 Python 数据分析服务；Electron �
 
 ## 本机构建
 
-安装对应架构的 Python 3.11、Node.js 24 和 pnpm 11 后，在源码目录运行 `python3.11 build_macos_intel.py`。Intel 输出为 `electron/dist/衡势-1.1.0-macOS-Intel.dmg`；Apple Silicon 输出为 `衡势-1.1.0-macOS-Apple-Silicon.dmg`。
+本地脚本 `build_macos_intel.py` 适用于 Intel Mac，需 Python 3.11、Node.js 24 和 pnpm 11。Apple Silicon 请使用上述工作流的 arm64 构建目标。1.2.0 安装包分别为 `衡势-1.2.0-macOS-Intel.dmg` 和 `衡势-1.2.0-macOS-Apple-Silicon.dmg`。
 
 未配置 Apple Developer ID 时生成的 DMG 不带签名和公证。公开分发前，需要在 macOS 上进行签名、公证及安装验收。Windows 本机不能代表这些验证。

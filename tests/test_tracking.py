@@ -156,5 +156,11 @@ class TrackingTests(unittest.TestCase):
         self.assertIn('AAPL',data_service.ticker_matches('Apple raises its revenue forecast',['AAPL'],cfg))
         self.assertIn('SKHY',data_service.ticker_matches('SK Hynix raises HBM output',['SKHY']))
 
+    def test_smh_issuer_pe_has_report_date_and_never_invents_history_percentile(self):
+        report='SMH VanEck Semiconductor ETF As of October 31, 2026 Price/Earnings Ratio* 28.46'
+        value=fund_valuation.parse_vaneck_smh(report,datetime(2026,11,8,tzinfo=timezone.utc))
+        self.assertEqual(value['pe'],28.46);self.assertEqual(value['asof'],'2026-10-31')
+        self.assertIsNone(value['percentile'])
+
 
 if __name__=='__main__':unittest.main()

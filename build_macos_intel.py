@@ -59,7 +59,9 @@ def main():
     run('pnpm', 'install', '--frozen-lockfile', cwd=ROOT / 'electron')
     run('pnpm', 'run', 'check', cwd=ROOT / 'electron')
     run('pnpm', 'run', 'dist:mac', cwd=ROOT / 'electron')
-    print(ROOT / 'electron' / 'dist' / '衡势-0.5.0-macOS-Intel.dmg')
+    import json
+    version=json.loads((ROOT/'electron'/'package.json').read_text(encoding='utf8'))['version']
+    print(ROOT / 'electron' / 'dist' / f'衡势-{version}-macOS-Intel.dmg')
 
 
 if __name__ == '__main__':

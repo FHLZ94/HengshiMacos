@@ -235,3 +235,13 @@ article.decision-card{position:relative;padding:0;display:block;overflow:hidden;
 @media(max-width:1000px){.pulse-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.pulse-grid{grid-template-columns:1fr}.pulse-grid .metric{min-height:120px}}
 .absorption-pulse .pair-values strong{font-size:14px;line-height:1.6}.absorption-pulse .pair-values small{font-size:11px;line-height:1.6}
+/* One conclusion scale and a centered content zone across all six pulse cards. */
+.pulse-grid .metric{display:grid;grid-template-rows:auto minmax(126px,1fr) auto;align-items:start;min-height:196px}
+.pulse-grid .metric .label{align-self:start}.pulse-grid .metric .meta{align-self:end;margin-top:0}
+.pulse-grid .pair-values{align-self:center;gap:14px;width:100%}
+.pulse-grid .pair-values strong,.pulse-grid .action-pulse .pair-values strong,.pulse-grid .absorption-pulse .pair-values strong,.pulse-grid .event-risk-level{font-size:18px;font-weight:700;line-height:1.55}
+.pulse-grid .pair-values>div{align-items:center}.pulse-grid .pair-values b{align-self:center}.pulse-grid .pair-values small{font-size:11px;line-height:1.6}
+.pulse-grid .event-pulse{grid-template-rows:auto minmax(126px,1fr) auto}.event-pulse .event-risk-level{align-self:center}
+.pulse-grid .pulse-event-link{margin-top:-20px}.annual-caption{white-space:normal}
+@media(max-width:650px){.pulse-grid .metric{min-height:184px;grid-template-rows:auto minmax(112px,1fr) auto}}
+.pulse-event-content{align-self:center;display:flex;flex-direction:column;justify-content:center;gap:9px}.pulse-grid .pulse-event-link{margin-top:0}.pulse-grid .pair-values>div strong{overflow-wrap:anywhere}.fund-rank{font-variant-numeric:tabular-nums}

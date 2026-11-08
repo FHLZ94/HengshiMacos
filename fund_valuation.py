@@ -9,6 +9,7 @@ import requests
 URLS = {'QQQ':'https://worldperatio.com/index/nasdaq-100/',
         'SPY':'https://worldperatio.com/index/sp-500/'}
 VGT_FACTSHEET='https://fund-docs.vanguard.com/F0958.pdf'
+SMH_FACTSHEET='https://www.vaneck.com/us/en/investments/semiconductor-etf-smh-fact-sheet.pdf'
 
 
 def parse_vanguard_vgt(text,now=None):
@@ -22,6 +23,19 @@ def parse_vanguard_vgt(text,now=None):
     return dict(ticker='VGT',pe=float(value.group(1)),asof=asof.isoformat(),source='先锋官方季度报告',
                 url=VGT_FACTSHEET,basis='发行人组合市盈率（季度报告口径）',history=[],percentile=None,
                 years=0,samples=0,fetched_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
+
+
+def parse_vaneck_smh(text,now=None):
+    plain=' '.join(text.split());now=now or datetime.now(timezone.utc)
+    if 'VanEck Semiconductor ETF' not in plain or not re.search(r'\bSMH\b',plain):raise ValueError('基金身份不匹配')
+    day=re.search(r'As of ([A-Za-z]+ \d{1,2}, \d{4})',plain)
+    value=re.search(r'Price/Earnings Ratio\*?\s+([\d.]+)',plain,re.I)
+    if not day or not value:raise ValueError('发行人PE或日期缺失')
+    asof=datetime.strptime(day.group(1),'%B %d, %Y').date()
+    if asof>now.date():raise ValueError('发行人日期超前')
+    return dict(ticker='SMH',pe=float(value.group(1)),asof=asof.isoformat(),source='VanEck 官方月度报告',
+                url=SMH_FACTSHEET,basis='发行人组合市盈率（报告口径）',history=[],percentile=None,
+                years=0,samples=0,fetched_at=now.isoformat(timespec='seconds'))
 
 
 def percentile(snapshot,years=10):
@@ -65,19 +79,31 @@ def fetch_fund_valuations(config):
     from data_service import http_get,HEADERS,configured_proxy
     def one(ticker,url):
         try:
-            r=http_get(url,headers=HEADERS,timeout=(4,10),proxies=configured_proxy(config))
+            r=http_get(url,headers=HEADERS,timeout=(5,15),proxies=configured_proxy(config))
             r.raise_for_status()
-            if ticker=='VGT':
+            if ticker in ('VGT','SMH'):
                 if len(r.content)>5_000_000:raise ValueError('发行人报告大小异常')
                 reader=PdfReader(BytesIO(r.content))
-                row=parse_vanguard_vgt('\n'.join(page.extract_text() or '' for page in reader.pages[:3]))
+                report='\n'.join(page.extract_text() or '' for page in reader.pages[:3])
+                row=parse_vanguard_vgt(report) if ticker=='VGT' else parse_vaneck_smh(report)
             else:row=parse_world_pe(r.text,ticker,url)
             return ticker,row,None
-        except Exception as e:return ticker,None,type(e).__name__
+        except (requests.RequestException,ValueError,TypeError,KeyError) as first:
+            try:
+                r=http_get(url,headers=HEADERS,timeout=(8,25),proxies=configured_proxy(config,for_google=True))
+                r.raise_for_status()
+                if ticker=='SMH':
+                    reader=PdfReader(BytesIO(r.content));row=parse_vaneck_smh('\n'.join(page.extract_text() or '' for page in reader.pages[:3]))
+                elif ticker=='VGT':
+                    reader=PdfReader(BytesIO(r.content));row=parse_vanguard_vgt('\n'.join(page.extract_text() or '' for page in reader.pages[:3]))
+                else:row=parse_world_pe(r.text,ticker,url)
+                return ticker,row,None
+            except Exception:return ticker,None,type(first).__name__
     rows={};health=[]
     with ThreadPoolExecutor(max_workers=3) as pool:
         sources=dict(URLS)
         if 'VGT' in config.get('watchlist',[]):sources['VGT']=VGT_FACTSHEET
+        if 'SMH' in config.get('watchlist',[]):sources['SMH']=SMH_FACTSHEET
         fs=[pool.submit(one,t,u) for t,u in sources.items()]
         for f in as_completed(fs):
             t,row,error=f.result()

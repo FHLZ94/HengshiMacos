@@ -28,6 +28,7 @@ class ConsistencyTests(unittest.TestCase):
             main.save_snapshot([quote('SMH',100)],[],comparisons=[{'ticker':'SMH','target_median':300,'fetched_at':datetime.now(timezone.utc).isoformat()}])
             a=DesktopAPI();s=a.get_state();card=next(x for x in s['actions'] if x['ticker']=='SMH')
             self.assertIsNone(card['reference_price']);self.assertIsNone(card['annual']['upside_pct'])
+            self.assertTrue(card['is_fund']);self.assertIn('fund_valuation',card)
 
 
 class EventRiskTests(unittest.TestCase):

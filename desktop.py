@@ -229,7 +229,11 @@ class DesktopAPI:
                 rows,health=intraday_signals.fetch(config)
                 if rows:
                     with self.lock:
-                        self.intraday_histories={**self.intraday_histories,**rows}
+                        for ticker,row in rows.items():
+                            old=self.intraday_histories.get(ticker,{})
+                            merged={b['time']:b for b in old.get('bars',[])}
+                            merged.update({b['time']:b for b in row.get('bars',[])})
+                            self.intraday_histories[ticker]={**row,'bars':sorted(merged.values(),key=lambda b:b['time'])[-13000:]}
                         main.save_market_extra('intraday_history',self.intraday_histories);self.revision+=1
             except Exception:logging.exception('Intraday refresh failed')
             finally:
@@ -616,6 +620,7 @@ class DesktopAPI:
                 self._annual_cache[annual_key]=annual_reference(history_map.get(ticker),q.get('price') if q else None,advice.get('watch_zone'),fair)
                 if len(self._annual_cache)>200:self._annual_cache={annual_key:self._annual_cache[annual_key]}
             actions.append({'ticker':ticker,'name':company,'held':ticker in held,'metric':metric,
+                            'is_fund':is_fund,'fund_valuation':fund_values.get(ticker),
                             'sync_status':tracking_sync.get(ticker,''),
                             'current_price':q['price'] if q else None,
                             'price_label':q.get('price_label','最近报价') if q else '报价待获取',

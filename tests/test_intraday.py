@@ -1,4 +1,5 @@
 import unittest,math
+from unittest.mock import patch
 from datetime import datetime,timedelta,timezone
 from zoneinfo import ZoneInfo
 import intraday_signals,market_model,event_risk
@@ -62,5 +63,32 @@ class IntradayTests(unittest.TestCase):
         risks=event_risk.assess_events([])
         environment=event_risk.trading_environment(result,risks)
         self.assertIn('避免追价',environment['SMH']['label'])
+
+    def test_rsi_only_divergence_cannot_confirm_macd(self):
+        bars=self.double_bottom()
+        rsi,dif,hist=intraday_signals.indicators(bars)
+        with patch('intraday_signals.indicators',return_value=(rsi,[-1.0]*len(bars),hist)):
+            result=intraday_signals.frame(bars,30)
+        self.assertFalse(result['confirmed']);self.assertFalse(result['candidate'])
+
+    def test_thirty_minute_core_controls_structure_even_if_fifteen_confirms(self):
+        empty={'available':True,'confirmed':False,'candidate':False,'top_confirmed':False,
+               'top_candidate':False,'absorption':'承接偏弱','minutes':30}
+        def make_frame(bars,minutes):
+            return {**empty,'minutes':minutes,'confirmed':minutes==15}
+        with patch('intraday_signals.frame',side_effect=make_frame):
+            result=intraday_signals.analyze({'ticker':'SMH','bars':self.sessions()})
+        self.assertEqual(result['primary'],'30分暂无背离')
+        self.assertEqual(result['bottom_score'],25)
+        self.assertEqual(result['weights']['30'],.5)
+        self.assertIsNone(result['formation']['probability_pct'])
+
+    def test_existing_confirmed_shape_does_not_become_a_fake_100_percent_forecast(self):
+        result=intraday_signals.confirmation_reference(self.double_bottom(),{'confirmed':True})
+        self.assertEqual(result['status'],'confirmed');self.assertIsNone(result['probability_pct'])
+
+    def test_too_few_candidate_episodes_do_not_generate_formation_probability(self):
+        result=intraday_signals.confirmation_reference(self.double_bottom(),{'candidate':True})
+        self.assertFalse(result['available']);self.assertIsNone(result['probability_pct'])
 
 if __name__=='__main__':unittest.main()

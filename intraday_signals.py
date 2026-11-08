@@ -1,4 +1,4 @@
-"""Completed 15/30/60 minute structure, Wilder RSI and confirmed swing divergence."""
+"""Completed MACD structures: 30-minute core with 15/60-minute checks."""
 from concurrent.futures import ThreadPoolExecutor,as_completed
 from datetime import datetime,timezone,timedelta
 from math import isfinite
@@ -85,7 +85,7 @@ def frame(bars,minutes):
         rsi_div=rsi[a] is not None and rsi[b] is not None and rsi[a]<=40 and rsi[b]<=50 and rsi[b]>=rsi[a]+3
         threshold=max(abs(dif[a] or 0)*.1, bars[b]['close']*.0001)
         macd_div=dif[a] is not None and dif[b] is not None and dif[a]<0 and dif[b]<0 and dif[b]>=dif[a]+threshold
-        if not (rsi_div or macd_div):return None
+        if not macd_div:return None
         return {'first_time':bars[a]['time'],'second_time':bars[b]['time'],'first_low':round(bars[a]['low'],4),
                 'second_low':round(bars[b]['low'],4),'rsi_first':round(rsi[a],1),'rsi_second':round(rsi[b],1),
                 'macd_first':round(dif[a],4),'macd_second':round(dif[b],4),'rsi_divergence':bool(rsi_div),
@@ -94,7 +94,7 @@ def frame(bars,minutes):
         if last-b>8:break
         for a in reversed([p for p in pivots if p<b]):
             matched=compare(a,b)
-            if matched:confirmed=matched;break
+            if matched and min(row['low'] for row in bars[b+1:])>=bars[b]['low']*.999:confirmed=matched;break
         if confirmed:break
     highs=[i for i in range(max(35,last-100),last-1)
            if bars[i]['high']>max(v['high'] for v in bars[i-2:i])
@@ -104,7 +104,7 @@ def frame(bars,minutes):
         rsi_div=rsi[a]>=60 and rsi[b]>=50 and rsi[b]<=rsi[a]-3
         threshold=max(abs(dif[a] or 0)*.1,bars[b]['close']*.0001)
         macd_div=dif[a] is not None and dif[b] is not None and dif[a]>0 and dif[b]>0 and dif[b]<=dif[a]-threshold
-        if not (rsi_div or macd_div):return None
+        if not macd_div:return None
         return {'first_time':bars[a]['time'],'second_time':bars[b]['time'],'first_high':round(bars[a]['high'],4),
             'second_high':round(bars[b]['high'],4),'rsi_first':round(rsi[a],1),'rsi_second':round(rsi[b],1),
             'macd_first':round(dif[a],4),'macd_second':round(dif[b],4),'rsi_divergence':bool(rsi_div),
@@ -114,7 +114,8 @@ def frame(bars,minutes):
         if last-b>8:break
         for a in reversed([p for p in highs if p<b]):
             confirmed_top=compare_top(a,b)
-            if confirmed_top:break
+            if confirmed_top and max(row['high'] for row in bars[b+1:])<=bars[b]['high']*1.001:break
+            confirmed_top=None
         if confirmed_top:break
     if not confirmed_top:
         for b in (last,last-1):
@@ -150,30 +151,103 @@ def frame(bars,minutes):
             'overbought':rsi[-1]>=70,
             'same_slot_volume_ratio':round(ratio,2) if ratio is not None else None,'volume_baselines':len(matched),
             'pressure_score':round(pressure*100,1),'absorption':absorption,'session_tail':current.get('session_tail',False),
+            'macd_dif':round(dif[-1],5),'macd_histogram':round(hist[-1],5),'histogram_improving':hist[-1]>hist[-2],
             'high_stall':high_stall,'recent_progress_atr':round(move/atr,2) if atr else None}
 
 
 def analyze(history):
     frames={str(m):frame(resample(history.get('bars',[]),m),m) for m in (15,30,60)}
     valid=[v for v in frames.values() if v['available']]
+    focus=frames['30']
     confirmed=[v['minutes'] for v in valid if v['confirmed']]
     resonance='三周期底结构共振' if len(confirmed)==3 else '/'.join(str(v) for v in confirmed)+'分底背离' if confirmed else '候选底结构，等待确认' if any(v['candidate'] for v in valid) else '尚未确认底背离'
     top_confirmed=[v['minutes'] for v in valid if v['top_confirmed']]
     top_resonance='三周期顶结构共振' if len(top_confirmed)==3 else '/'.join(str(v) for v in top_confirmed)+'分顶背离' if top_confirmed else '候选顶结构，等待确认' if any(v['top_candidate'] for v in valid) else '尚未确认顶背离'
     shorter=[frames[k] for k in ('15','30') if frames[k]['available']]
-    absorption='多周期放量承接' if len(shorter)==2 and all(v['absorption']=='放量承接' for v in shorter) else '初步承接' if any(v['absorption'] in ('放量承接','初步承接') for v in shorter) else '卖压仍在' if any(v['absorption']=='放量卖压' for v in shorter) else '承接偏弱'
-    return {'available':bool(valid),'ticker':history['ticker'],'frames':frames,'resonance':resonance,'absorption':absorption,
+    absorption='多周期放量承接' if len(shorter)==2 and all(v['absorption']=='放量承接' for v in shorter) else '卖压仍在' if focus.get('absorption')=='放量卖压' else '初步承接' if focus.get('absorption') in ('放量承接','初步承接') else '承接偏弱'
+    weights={'15':.25,'30':.50,'60':.25}
+    bottom_score=sum(weights[k]*(100 if v.get('confirmed') else 40 if v.get('candidate') else 0) for k,v in frames.items())
+    top_score=sum(weights[k]*(100 if v.get('top_confirmed') else 40 if v.get('top_candidate') else 0) for k,v in frames.items())
+    primary='30分底背离确认' if focus.get('confirmed') else '30分顶背离确认' if focus.get('top_confirmed') else '30分底背离候选' if focus.get('candidate') else '30分顶背离候选' if focus.get('top_candidate') else '30分暂无背离'
+    formation=confirmation_reference(resample(history.get('bars',[]),30),focus)
+    return {'available':focus.get('available',False),'ticker':history['ticker'],'frames':frames,'resonance':resonance,'absorption':absorption,
+            'primary':primary,'primary_minutes':30,'weights':weights,
+            'bottom_score':round(bottom_score),'top_score':round(top_score),'formation':formation,
             'confirmed_frames':confirmed,'source':history.get('source'),'fetched_at':history.get('fetched_at'),
             'top_confirmed_frames':top_confirmed,'top_resonance':top_resonance,
             'high_stall_frames':[v['minutes'] for v in valid if v.get('high_stall')],
             'limits':'左右各2根K线确认价格低点；候选不计作确认。多周期使用同一成交数据，不能相乘为底部概率。'}
 
 
+def confirmation_reference(bars,current):
+    """Past candidate pivots must be recognised before their right-hand bars exist.
+
+    Formation refers to a 30-minute MACD shape confirming within four bars;
+    it does not mean a profitable trade or the probability of a market bottom.
+    """
+    from market_model import _wilson
+    result={'available':False,'probability_pct':None,'samples':0,'validation_count':0,
+            'definition':'30分钟MACD候选在随后4根完整K线内完成左右低点确认；不代表收益或市场底部概率',
+            'reason':'尚未出现30分钟候选形态'}
+    if current.get('confirmed') or current.get('top_confirmed'):
+        return {**result,'reason':'30分钟形态已经确认，不再估计其形成概率','status':'confirmed'}
+    direction='bottom' if current.get('candidate') else 'top' if current.get('top_candidate') else None
+    if not direction:return result
+    result['direction']=direction
+    outcomes=[];last_anchor=-10
+    # Precompute RSI/DIF once. Prefix-dependent indicators never use later bars.
+    _,dif,_=indicators(bars)
+    for i in range(60,len(bars)-4):
+        if i-last_anchor<4:continue
+        price_key='low' if direction=='bottom' else 'high'
+        extreme=min if direction=='bottom' else max
+        point=bars[i][price_key]
+        if point!=extreme(v[price_key] for v in bars[i-2:i+1]):continue
+        if direction=='bottom':
+            prior=[j for j in range(max(35,i-50),i-4)
+                   if bars[j]['low']<min(v['low'] for v in bars[j-2:j])
+                   and bars[j]['low']<=min(v['low'] for v in bars[j+1:j+3])]
+        else:
+            prior=[j for j in range(max(35,i-50),i-4)
+                   if bars[j]['high']>max(v['high'] for v in bars[j-2:j])
+                   and bars[j]['high']>=max(v['high'] for v in bars[j+1:j+3])]
+
+        candidate=False
+        for a in reversed(prior):
+            threshold=max(abs(dif[a] or 0)*.1,bars[i]['close']*.0001)
+            if direction=='bottom':
+                candidate=(point<bars[a]['low']*.999 and dif[a] is not None and dif[i] is not None
+                           and dif[a]<0 and dif[i]<0 and dif[i]>=dif[a]+threshold)
+            else:
+                candidate=(point>bars[a]['high']*1.001 and dif[a] is not None and dif[i] is not None
+                           and dif[a]>0 and dif[i]>0 and dif[i]<=dif[a]-threshold)
+            if candidate:break
+        if not candidate:continue
+        last_anchor=i
+        # The candidate low/high itself must hold over the next two right bars.
+        right=extreme(v[price_key] for v in bars[i+1:i+3])
+        outcome=int(right>=point if direction=='bottom' else right<=point)
+        outcomes.append(outcome)
+    n=len(outcomes);result['samples']=n
+    if n<60:
+        return {**result,'reason':f'已到期不重叠候选仅{n}组，至少60组后才估计形成概率；继续积累分钟历史'}
+    split=max(30,n//2);checks=[]
+    for i in range(split,n):
+        rate=(sum(outcomes[:i])+1)/(i+2)
+        checks.append((rate,outcomes[i]))
+    if len(checks)<30:return {**result,'reason':'按时间验证不足30次，暂不发布形成概率'}
+    p=(sum(outcomes)+1)/(n+2)
+    error=mean((pred-actual)**2 for pred,actual in checks)
+    return {**result,'available':True,'probability_pct':round(p*100,1),'validation_count':len(checks),
+            'brier':round(error,4),'interval':_wilson(sum(outcomes),n),'method':'候选形态历史基准',
+            'reason':'以过去已到期的候选计算平滑频率，按时间验证；尚非多因子校准模型'}
+
+
 def fetch(config):
     def one(ticker):
         for host in ('query1.finance.yahoo.com','query2.finance.yahoo.com'):
             try:
-                r=data_service.http_get(f'https://{host}/v8/finance/chart/{ticker}',params={'range':'1mo','interval':'15m','includePrePost':'false'},headers=data_service.HEADERS,proxies=data_service.configured_proxy(config,for_google=True),timeout=(4,9))
+                r=data_service.http_get(f'https://{host}/v8/finance/chart/{ticker}',params={'range':'60d','interval':'15m','includePrePost':'false'},headers=data_service.HEADERS,proxies=data_service.configured_proxy(config,for_google=True),timeout=(4,9))
                 r.raise_for_status();return ticker,parse_chart(r.json(),ticker)
             except (requests.RequestException,ValueError,TypeError,KeyError):continue
         return ticker,None
