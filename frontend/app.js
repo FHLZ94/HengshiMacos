@@ -59,13 +59,10 @@ function renderPulse(){
   const hot=codes.some(t=>model.targets[t].setup.overbought),cold=codes.some(t=>model.targets[t].setup.oversold);
   $('#pulseHeadline').textContent=worst?'重大事件风险上升，优先核对敞口':hot && cold?'科技与半导体位置分化，分别核对过热与超卖':hot?'部分指数高位偏热，核对拥挤与追价风险':codes.every(t=>model.targets[t].setup.oversold)?'科技与半导体进入明显超卖区，承接决定能否出手':assessment.headline || '短线情绪与交易环境';
   $('#pulseDate').textContent=`日线截至 ${model.date} · ${state.market.model_busy?'正在重算':'计算 '+new Date(model.computed_at).toLocaleTimeString('zh-CN',{hour12:false})}`;
-  const stageCard=pairMetric('市场阶段',codes.map(t=>({code:t,value:environment[t]?.stage || model.targets[t].setup.label})),'','stage-pulse');
   $('#pulseGrid').innerHTML=[
-    pairMetric('未来1~3日波段研判',codes.map(t=>({code:t,value:environment[t]?.label || '等待条件'})),'','action-pulse'),
     pairMetric('未来5日上涨概率',codes.map(t=>({code:t,value:number(model.targets[t].up5_pct,1)+'%'})),'','probability-pulse'),
     pairMetric('10日低点企稳概率',codes.map(t=>({code:t,value:number(model.targets[t].bottom10_pct,1)+'%'})),'','probability-pulse'),
     pairMetric('超买超卖与历史位置',codes.map(t=>{const p=model.targets[t].setup;return {code:t,value:p.label,note:`${p.overbought || p.lower_tail_pct>=85?'上':'下'}侧 ${number(p.overbought || p.lower_tail_pct>=85?p.upper_tail_pct:p.lower_tail_pct,1)}% · RSI ${number(p.rsi14,1)}`};}),'','position-pulse'),
-    stageCard,
     pairMetric('情绪与承接',codes.map(t=>{const m=minute[t];if(!m?.available)return {code:t,value:'等待RSI数据'};return {code:t,value:m.rsi_signal || 'RSI常态区间',note:`RSI 5/15/30：${number(m.rsi_5,1)} / ${number(m.rsi_15,1)} / ${number(m.rsi_30,1)}`};}),'','absorption-pulse')
   ].join('');
   $('#pulseFoot').textContent=codes.map(t=>`${t}：${environment[t]?.reason || ''}`).join('。')+'。新闻改变风险评级与动作条件；未通过历史检验的消息分数不直接加减概率。';
@@ -372,6 +369,7 @@ let booted=false;
 async function boot() {
   if (booted || !window.pywebview?.api) return;
   booted=true;
+  window.scrollTo({top:0,left:0,behavior:'instant'});
   bind();icons();await poll();setInterval(poll,2200);
 }
 document.addEventListener('pywebviewready',boot);

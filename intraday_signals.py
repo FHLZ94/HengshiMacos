@@ -172,12 +172,12 @@ def analyze(history):
     bottom_score=sum(weights[k]*(100 if v.get('confirmed') else 40 if v.get('candidate') else 0) for k,v in score_frames.items())
     top_score=sum(weights[k]*(100 if v.get('top_confirmed') else 40 if v.get('top_candidate') else 0) for k,v in score_frames.items())
     rsi5=frames.get('5',{}).get('rsi14');rsi15=frames.get('15',{}).get('rsi14');rsi30=frames.get('30',{}).get('rsi14')
-    rsi_signal=('短线超卖，等待承接' if rsi5 is not None and rsi15 is not None and rsi5<=30 and rsi15<=30 else
-                '短线超买，谨慎追价' if rsi5 is not None and rsi15 is not None and rsi5>=70 and rsi15>=70 else
-                '5分超卖，15分确认中' if rsi5 is not None and rsi5<=30 else
-                '15分超卖，等待5分同步' if rsi15 is not None and rsi15<=30 else
-                '5分超买，15分确认中' if rsi5 is not None and rsi5>=70 else
-                '15分超买，谨慎追价' if rsi15 is not None and rsi15>=70 else 'RSI处于常态区间')
+    rsi_signal=('短线超卖，可小额关注' if rsi5 is not None and rsi15 is not None and rsi5<=30 and rsi15<=30 else
+                '短线超买，避免追价' if rsi5 is not None and rsi15 is not None and rsi5>=70 and rsi15>=70 else
+                '5分超卖，等待15分确认' if rsi5 is not None and rsi5<=30 else
+                '15分超卖，等待5分确认' if rsi15 is not None and rsi15<=30 else
+                '5分超买，等待15分确认' if rsi5 is not None and rsi5>=70 else
+                '15分超买，避免追价' if rsi15 is not None and rsi15>=70 else 'RSI常态，暂不动作')
     primary='5/15分底背离确认' if 5 in confirmed and 15 in confirmed else '15分底背离确认' if 15 in confirmed else '5分底背离确认' if 5 in confirmed else '15分顶背离确认' if 15 in top_confirmed else '5/15分候选结构' if 5 in [v['minutes'] for v in score_frames.values() if v.get('candidate')] and 15 in [v['minutes'] for v in score_frames.values() if v.get('candidate')] else '5/15分暂无背离'
     formation=confirmation_reference(resample(history.get('bars',[]),30),focus)
     return {'available':focus.get('available',False),'ticker':history['ticker'],'frames':frames,'resonance':resonance,'absorption':absorption,
