@@ -49,11 +49,15 @@ jobs:
       - name: 检查前端与主进程
         working-directory: electron
         run: pnpm run check
+      - name: 下载并校验官方 Electron Intel 运行库
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python download_electron_runtime.py
       - name: 构建 Intel DMG
         working-directory: electron
         env:
           CSC_IDENTITY_AUTO_DISCOVERY: 'false'
-        run: pnpm run dist:mac
+        run: pnpm exec electron-builder --mac dmg --x64 --publish never --config.electronDist=resources/electron-runtime.zip
       - uses: actions/upload-artifact@v4
         with:
           name: 衡势-macOS-Intel-DMG
