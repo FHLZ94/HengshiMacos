@@ -78,9 +78,9 @@ class IntradayTests(unittest.TestCase):
             return {**empty,'minutes':minutes,'confirmed':minutes==15}
         with patch('intraday_signals.frame',side_effect=make_frame):
             result=intraday_signals.analyze({'ticker':'SMH','bars':self.sessions()})
-        self.assertEqual(result['primary'],'30分暂无背离')
-        self.assertEqual(result['bottom_score'],25)
-        self.assertEqual(result['weights']['30'],.5)
+        self.assertEqual(result['primary'],'15分底背离确认')
+        self.assertEqual(result['bottom_score'],40)
+        self.assertEqual(result['weights']['15'],.4)
         self.assertIsNone(result['formation']['probability_pct'])
 
     def test_existing_confirmed_shape_does_not_become_a_fake_100_percent_forecast(self):
