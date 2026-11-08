@@ -301,7 +301,13 @@ function renderSettings() {
   $('#autoProxy').checked = !!state.settings.auto_local_proxy;
   if (document.activeElement !== $('#modelInput')) $('#modelInput').value=state.settings.openai_model || '';
 }
-function render() {setStatus();renderPulse();renderEvents();renderMarket();renderDecisions();renderPortfolio();renderSettings();icons();}
+function syncActiveTab(){
+  const anchor=document.querySelector('.topbar').getBoundingClientRect().bottom+32;
+  let current='marketPulse';
+  document.querySelectorAll('main > section').forEach(section=>{if(section.getBoundingClientRect().top<=anchor)current=section.id;});
+  document.querySelectorAll('.section-nav a').forEach(link=>link.classList.toggle('active',link.getAttribute('href')==='#'+current));
+}
+function render() {setStatus();renderPulse();renderEvents();renderMarket();renderDecisions();renderPortfolio();renderSettings();icons();syncActiveTab();}
 
 async function call(method,...args) {
   try { return await window.pywebview.api[method](...args); }
@@ -317,11 +323,12 @@ async function poll() {
 function bind() {
   $('#rotationPeriod').addEventListener('click',event=>{const button=event.target.closest('[data-period]');if(button){rotationPeriod=Number(button.dataset.period);renderMarket();icons();}});
   document.querySelectorAll('.section-nav a').forEach(link=>link.addEventListener('click',()=>{document.querySelectorAll('.section-nav a').forEach(a=>a.classList.remove('active'));link.classList.add('active');}));
-  const sections=document.querySelectorAll('main > section');
-  if(window.IntersectionObserver){
-    const observer=new IntersectionObserver(entries=>{for(const e of entries)if(e.isIntersecting)document.querySelectorAll('.section-nav a').forEach(a=>a.classList.toggle('active',a.getAttribute('href')==='#'+e.target.id));},{rootMargin:'-130px 0px -55% 0px',threshold:0});
-    sections.forEach(section=>observer.observe(section));
-  }
+  let tabScrollScheduled=false;
+  window.addEventListener('scroll',()=>{
+    if(tabScrollScheduled)return;
+    tabScrollScheduled=true;
+    requestAnimationFrame(()=>{syncActiveTab();tabScrollScheduled=false;});
+  },{passive:true});
   $('#refreshButton').addEventListener('click', async () => { const result = await call('refresh');if (result?.message) toast(result.message);await poll(); });
   for (const selector of ['#eventSearch','#dateFilter','#topicFilter','#gradeFilter','#directionFilter']) $(selector).addEventListener(selector === '#eventSearch' ? 'input' : 'change', () => {visibleEvents=12;renderEvents();});
   $('#leadEvent').addEventListener('click', () => {if (focusEventId != null) {selectedEvent=focusEventId;renderEventDetail();$('#eventDetail').scrollIntoView({behavior:'smooth',block:'center'});}});

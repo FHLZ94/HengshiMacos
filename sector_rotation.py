@@ -28,11 +28,13 @@ def rotation(histories, horizon=5, today=None):
                          volume_ratio=round(volume/horizon/avg,2) if avg else None,
                          defensive=ticker in DEFENSIVE))
     rows.sort(key=lambda r:r['pressure'],reverse=True)
-    defensive = [r for r in rows if r['defensive'] and r['relative_pct']>0 and r['pressure']>0]
+    defensive = [r for r in rows if r['defensive'] and r['relative_pct']>.5 and r['pressure']>0]
+    strong_defensive = [r for r in defensive if r['pressure']>10]
     leaders = [r['name'] for r in rows if r['pressure']>10 and r['relative_pct']>0][:3]
     laggards = [r['name'] for r in reversed(rows) if r['pressure']< -10 and r['relative_pct']<0][:3]
     smh = next((r for r in rows if r['ticker']=='SMH'),None)
-    headline = ('防御资产相对走强，风险偏好偏谨慎' if len(defensive)>=3 else
+    headline = ('防御资产承接增强，风险偏好偏谨慎' if len(strong_defensive)>=3 else
+                '防御资产相对抗跌，成长板块承压' if len(defensive)>=3 else
                 '板块分化，关注价格与承接是否同步' if leaders and laggards else '资金偏好尚未形成一致方向')
     evidence = []
     if leaders: evidence.append('承接与相对强弱同时改善：'+'、'.join(leaders))
