@@ -15,11 +15,11 @@ jobs:
           - runner: macos-15-intel
             arch: x64
             pyarch: x86_64
-            artifact: 衡势-1.2.0-macOS-Intel.dmg
+            artifact: 衡势-1.3.0-macOS-Intel.dmg
           - runner: macos-15
             arch: arm64
             pyarch: arm64
-            artifact: 衡势-1.2.0-macOS-Apple-Silicon.dmg
+            artifact: 衡势-1.3.0-macOS-Apple-Silicon.dmg
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
