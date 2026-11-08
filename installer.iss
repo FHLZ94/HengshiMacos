@@ -50,8 +50,3 @@ Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM ""{#MyAppExeName}"""; Fla
 [UninstallDelete]
 Type: filesAndOrDirs; Name: "{app}"
 
-[UninstallRun]
-Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM ""{#MyAppExeName}"""; Flags: runhidden waituntilterminated
-
-[UninstallDelete]
-Type: filesAndOrDirs; Name: "{app}"
