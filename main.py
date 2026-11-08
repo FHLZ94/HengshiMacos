@@ -6,6 +6,8 @@ from urllib.parse import quote
 
 import requests
 import data_service
+import securities
+import tempfile
 
 APP_DIR = (Path(os.environ['HENGSHI_DATA_DIR']) if os.environ.get('HENGSHI_DATA_DIR') else
            Path.home() / 'Library' / 'Application Support' / '衡势' if sys.platform == 'darwin' else
@@ -14,10 +16,10 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=str(APP_DIR / 'application.log'), level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s', encoding='utf-8')
 DB = APP_DIR / 'events.sqlite3'
-APP_VERSION = '0.6.0'
+APP_VERSION = '1.0.0'
 CONFIG = APP_DIR / 'settings.json'
 ICON = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'nexus.ico'
-DEFAULT_WATCHLIST = ['QQQ','SPY','QQQM','SMH','ORCL','MRVL','MU','LITE','INTC','AVGO','^VIX']
+DEFAULT_WATCHLIST = list(securities.DEFAULT_TRACKING)
 FEEDS = [
     ('Google News · World Markets', 'https://news.google.com/rss/search?q=global+markets+OR+Federal+Reserve+OR+Treasury+OR+tariffs&hl=en-US&gl=US&ceid=US:en'),
     ('Google News · AI Infrastructure', 'https://news.google.com/rss/search?q=AI+datacenter+capex+OR+cloud+compute+OR+semiconductor+orders&hl=en-US&gl=US&ceid=US:en'),
@@ -309,25 +311,30 @@ def delete_position(ticker):
 
 
 def load_settings():
-    defaults = {'watchlist': DEFAULT_WATCHLIST, 'refresh_seconds': 300, 'openai_base_url':'http://localhost:11434/v1', 'openai_model':'qwen3:4b', 'openai_api_key':'', 'http_proxy':'', 'https_proxy':'', 'auto_local_proxy':True}
+    defaults = {'watchlist':list(DEFAULT_WATCHLIST), 'refresh_seconds': 300, 'openai_base_url':'http://localhost:11434/v1', 'openai_model':'qwen3:4b', 'openai_api_key':'', 'http_proxy':'', 'https_proxy':'', 'auto_local_proxy':True}
     if CONFIG.exists():
         try:
             loaded={**defaults, **json.loads(CONFIG.read_text(encoding='utf-8'))}
-            current=['MU' if ticker=='DRAM' else ticker for ticker in loaded['watchlist']]
-            front=[ticker for ticker in ('QQQ','SPY','QQQM','SMH') if ticker in current]
-            ordered=front+[ticker for ticker in current if ticker not in front]
-            ordered=list(dict.fromkeys(ordered))
-            if loaded['watchlist']!=ordered:
-                loaded['watchlist']=ordered
-                save_settings(loaded)
-            return loaded
+            migrated=securities.migrate_settings(loaded)
+            if migrated!=loaded:save_settings(migrated)
+            return migrated
         except Exception:
             pass
-    return defaults
+    return securities.migrate_settings(defaults)
 
 
 def save_settings(cfg):
-    CONFIG.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding='utf-8')
+    # Atomic replacement preserves the previous list if a write is interrupted.
+    temporary=None
+    try:
+        with tempfile.NamedTemporaryFile(mode='w',encoding='utf-8',dir=CONFIG.parent,
+                                         prefix='.settings-',suffix='.tmp',delete=False) as output:
+            temporary=Path(output.name)
+            json.dump(cfg,output,ensure_ascii=False,indent=2)
+            output.flush();os.fsync(output.fileno())
+        os.replace(temporary,CONFIG)
+    finally:
+        if temporary and temporary.exists():temporary.unlink()
 
 
 def sentiment_score(text):

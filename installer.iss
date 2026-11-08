@@ -1,5 +1,5 @@
 #define MyAppName "衡势"
-#define MyAppVersion "0.6.0"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "范光旭"
 #define MyAppExeName "衡势.exe"
 
@@ -7,7 +7,7 @@
 AppId={{B32F0E6A-24A2-4C1C-9D20-92C82E1F03C8}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
-AppVerName={#MyAppName} {#MyAppVersion} 预览版
+AppVerName={#MyAppName} {#MyAppVersion} 正式版
 AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\衡势
 DefaultGroupName={#MyAppName}

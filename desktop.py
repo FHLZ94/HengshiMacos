@@ -22,6 +22,7 @@ import sector_rotation
 from investment_reference import annual_reference
 import valuation
 import event_intelligence
+import securities
 from signals import analyze_history, flow_proxy, scenario
 from translation_service import TranslationStore
 
@@ -30,6 +31,7 @@ ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'fron
 LOCAL_TZ = timezone(timedelta(hours=8))
 MARKET_SAMPLE=('IWM','RSP','XLF','XLE','XLI','XLY')
 HISTORY_EXTRA=tuple(dict.fromkeys((*MARKET_SAMPLE,*data_service.SECTOR_TICKERS)))
+MODEL_INPUTS=securities.MODEL_INPUTS
 
 
 def local_time(value):
@@ -93,6 +95,7 @@ COMPANY_NAMES={'QQQ':'纳斯达克100指数基金','SPY':'标普500指数基金'
                'AMAT':'应用材料','KLAC':'科磊','LRCX':'泛林集团','ARM':'安谋',
                'QCOM':'高通','COHR':'相干公司','ANET':'阿里斯塔网络',
                'MSFT':'微软','AMZN':'亚马逊','GOOGL':'谷歌母公司'}
+COMPANY_NAMES.update(securities.CHINESE_NAMES)
 
 
 def health_reason(value):
@@ -148,10 +151,10 @@ class DesktopAPI:
         self.lock=threading.RLock()
         self.settings=main.load_settings()
         self.translation=TranslationStore(main.APP_DIR/'translations.sqlite3')
-        self.news,self.quotes,self.health=main.load_snapshot(self.settings['watchlist'])
-        self.estimates=main.load_estimates(self.settings['watchlist'])
-        self.histories=main.load_histories(self.settings['watchlist']+list(HISTORY_EXTRA))
         self.positions=main.load_positions()
+        self.news,self.quotes,self.health=main.load_snapshot(self._quote_tickers())
+        self.estimates=main.load_estimates(self.settings['watchlist'])
+        self.histories=main.load_histories(self._history_tickers())
         self.holding_flags=main.load_holding_flags()
         self.neutral=main.load_neutral_multiples()
         self.management=main.load_management_guidance()
@@ -165,6 +168,8 @@ class DesktopAPI:
         self.model_busy=False
         self.model_pending=False
         self._annual_cache={}
+        self.tracking_sync={}
+        self.adding_tickers=set()
         self.busy=False
         self.quote_busy=False
         self.search_busy=False
@@ -183,6 +188,13 @@ class DesktopAPI:
         self.refresh()
         threading.Thread(target=self._scheduler,daemon=True).start()
 
+    def _quote_tickers(self):
+        return list(dict.fromkeys([*self.settings['watchlist'],*MODEL_INPUTS,
+                                   *(p['ticker'] for p in self.positions)]))
+
+    def _history_tickers(self):
+        return list(dict.fromkeys([*self._quote_tickers(),*HISTORY_EXTRA]))
+
     def _scheduler(self):
         last_full=time.monotonic()
         while True:
@@ -196,14 +208,14 @@ class DesktopAPI:
     def _refresh_session_async(self):
         with self.lock:
             if self.quote_busy or self.busy:return
-            self.quote_busy=True;config=copy.deepcopy(self.settings)
+            self.quote_busy=True;config=copy.deepcopy(self.settings);tickers=self._quote_tickers()
         def work():
             try:
-                rows,health=data_service.fetch_session_quotes(config['watchlist'],config)
+                rows,health=data_service.fetch_session_quotes(tickers,config)
                 if rows:
                     main.save_snapshot(rows,[health])
                     with self.lock:
-                        self.quotes=main.load_snapshot(config['watchlist'])[1]
+                        self.quotes=main.load_snapshot(self._quote_tickers())[1]
                         self.last_sync=datetime.now(LOCAL_TZ).strftime('%m-%d %H:%M:%S')
                         self.revision+=1
             except Exception:logging.exception('Session quote refresh failed')
@@ -217,6 +229,8 @@ class DesktopAPI:
             if self.busy:return {'ok':True,'message':'已重新计算本地行情，网络同步正在进行'}
             self.busy=True;self.status='正在更新行情与研判';self.revision+=1
             config=copy.deepcopy(self.settings)
+            config['_quote_tickers']=self._quote_tickers()
+            config['_history_tickers']=self._history_tickers()
         threading.Thread(target=self._refresh_worker,args=(config,),daemon=True).start()
         return {'ok':True,'message':'已重新计算本地行情，并开始同步新数据'}
 
@@ -252,9 +266,9 @@ class DesktopAPI:
             # Apply each completed group immediately. Slow or blocked RSS cannot
             # hold back quotes, historical inputs or an offline model recalculation.
             with ThreadPoolExecutor(max_workers=9) as pool:
-                jobs={pool.submit(data_service.fetch_session_quotes,config['watchlist'],config):'sessions',
-                      pool.submit(main.fetch_quotes,config['watchlist'],config):'quotes',
-                      pool.submit(data_service.fetch_histories,config['watchlist']+list(HISTORY_EXTRA),config):'histories',
+                jobs={pool.submit(data_service.fetch_session_quotes,config.get('_quote_tickers',config['watchlist']),config):'sessions',
+                      pool.submit(main.fetch_quotes,config.get('_quote_tickers',config['watchlist']),config):'quotes',
+                      pool.submit(data_service.fetch_histories,config.get('_history_tickers',config['watchlist']+list(HISTORY_EXTRA)),config):'histories',
                       pool.submit(data_service.fetch_estimates,config['watchlist'],config):'estimates',
                       pool.submit(fund_valuation.fetch_fund_valuations,config):'funds',
                       pool.submit(data_service.fetch_comparison,config['watchlist'],config):'comparisons',
@@ -275,10 +289,10 @@ class DesktopAPI:
                                 kwargs['quotes']=data_service.reconcile_closed_quotes(rows,existing)
                             main.save_snapshot(kwargs.pop('quotes',[]),states,**kwargs)
                             with self.lock:
-                                if kind in ('quotes','sessions'):self.quotes=main.load_snapshot(config['watchlist'])[1]
-                                elif kind=='histories':self.histories=main.load_histories(config['watchlist']+list(HISTORY_EXTRA))
-                                elif kind=='estimates':self.estimates=main.load_estimates(config['watchlist'])
-                                else:self.comparisons=main.load_comparisons(config['watchlist'])
+                                if kind in ('quotes','sessions'):self.quotes=main.load_snapshot(self._quote_tickers())[1]
+                                elif kind=='histories':self.histories=main.load_histories(self._history_tickers())
+                                elif kind=='estimates':self.estimates=main.load_estimates(self.settings['watchlist'])
+                                else:self.comparisons=main.load_comparisons(self.settings['watchlist'])
                                 self.status='行情已更新，其他信息继续同步' if kind in ('quotes','sessions') and rows else '正在同步，已有数据可继续使用'
                                 self.revision+=1
                             if kind=='histories':self._start_model()
@@ -445,7 +459,11 @@ class DesktopAPI:
             search_query=self.search_query;search_urls=set(self.last_search_urls)
             analyses=dict(self.event_analysis)
             proxy=self.settings.get('https_proxy','')
-        translated=self.translation.get_many(text for item in news for text in (item['title'],item['summary']))
+            security_config=copy.deepcopy(self.settings)
+            tracking_sync=dict(self.tracking_sync)
+        metadata=security_config.get('securities') or {}
+        translated=self.translation.get_many([*(text for item in news for text in (item['title'],item['summary'])),
+                                              *(m.get('name','') for m in metadata.values())])
         public_news=[]
         for index,article in enumerate(sorted(news,key=lambda item:item.get('published',''),reverse=True)):
             grade=article.get('grade') or data_service.event_profile(article['source'],article['title'],article['impact'])[0]
@@ -493,10 +511,13 @@ class DesktopAPI:
             eps=e['eps'] if e else None
             price_gap=current_price_gap(q,comparison)
             conflict=price_gap is not None and abs(price_gap)>2.5
-            is_fund=ticker in ('QQQ','SPY','QQQM','SMH') or ticker.startswith('^')
+            is_fund=securities.is_fund(ticker,security_config) or ticker.startswith('^')
             calculated=valuation.calculate(q,e,comparison,neutral.get(ticker),management.get(ticker),average)
             if is_fund: calculated=valuation.calculate(q,None,None)
-            watch.append({'ticker':ticker,'name':COMPANY_NAMES.get(ticker,'自选标的'),
+            calculated['reported_period_zh']=chinese_period(calculated.get('reported_period'))
+            calculated['reported_quarters_zh']=[{**item,'period':chinese_period(item['period'])} for item in calculated.get('reported_quarters',[])]
+            company=COMPANY_NAMES.get(ticker) or metadata.get(ticker,{}).get('name_zh') or translated.get(metadata.get(ticker,{}).get('name','')) or metadata.get(ticker,{}).get('name') or '自选标的'
+            watch.append({'ticker':ticker,'name':company,'is_fund':is_fund,
                 'price':price,'change':q['change'] if q else None,'asof':trade_date(q.get('asof')) if q else '',
                 'quote_source':source_name(q.get('source','')) if q else '来源暂不可用',
                 'price_label':q.get('price_label','最近可得价格') if q else '报价缺失',
@@ -508,7 +529,7 @@ class DesktopAPI:
                 'eps_ntm':eps,'eps_period':chinese_period(e.get('period','')) if e else '',
                 'eps_source':'纳斯达克分析师季度一致预期' if e else '',
                 'eps_asof':local_time(e.get('fetched_at')) if e else '',
-                'ntm_pe':price/eps if price is not None and eps and eps>0 else None,
+                'ntm_pe':calculated.get('current_forward_pe'),
                 'neutral_pe':calculated['pe_used'],'fair_price':calculated['fair_price'],
                 'upside_pct':calculated['upside_pct'],
                 'neutral_source':calculated['pe_basis'],
@@ -538,7 +559,8 @@ class DesktopAPI:
             if annual_key not in self._annual_cache:
                 self._annual_cache[annual_key]=annual_reference(history_map.get(ticker),q.get('price') if q else None,advice.get('watch_zone'),fair,q.get('target_price') if q else None)
                 if len(self._annual_cache)>200:self._annual_cache={annual_key:self._annual_cache[annual_key]}
-            actions.append({'ticker':ticker,'held':ticker in held,'metric':metric,
+            actions.append({'ticker':ticker,'name':company,'held':ticker in held,'metric':metric,
+                            'sync_status':tracking_sync.get(ticker,''),
                             'current_price':q['price'] if q else None,
                             'price_label':q.get('price_label','最近报价') if q else '报价待获取',
                             'quote_asof':trade_date(q.get('asof')) if q else '',
@@ -578,13 +600,103 @@ class DesktopAPI:
                 return {'ok':False,'message':f'证券代码无效：{ticker}'}
             if ticker and ticker not in items:items.append(ticker)
         if not items:return {'ok':False,'message':'观察列表不能为空'}
-        front=[item for item in ('QQQ','SPY','QQQM','SMH') if item in items]
-        ordered=front+[item for item in items if item not in front]
         with self.lock:
-            self.settings['watchlist']=ordered;main.save_settings(self.settings)
+            if len(items)>60:return {'ok':False,'message':'最多可跟踪60个标的'}
+            updated={**self.settings,'watchlist':items};main.save_settings(updated);self.settings=updated
+            self._reload_tracking_data()
             self.revision+=1
         self.refresh()
         return {'ok':True,'message':'观察列表已保存'}
+
+    def _reload_tracking_data(self):
+        # Caller holds self.lock. In-flight refreshes always reload the current
+        # list so an earlier request cannot hide a newly added security.
+        self.quotes=main.load_snapshot(self._quote_tickers())[1]
+        self.estimates=main.load_estimates(self.settings['watchlist'])
+        self.histories=main.load_histories(self._history_tickers())
+        self.comparisons=main.load_comparisons(self.settings['watchlist'])
+
+    def add_tracking(self,raw):
+        try:ticker=securities.normalize(raw)
+        except ValueError as error:return {'ok':False,'message':str(error)}
+        with self.lock:
+            if ticker in self.settings['watchlist']:return {'ok':False,'message':f'{ticker} 已在跟踪列表中'}
+            if ticker in self.adding_tickers:return {'ok':False,'message':'正在识别该标的，请稍候'}
+            if len(self.settings['watchlist'])>=60:return {'ok':False,'message':'最多可跟踪60个标的'}
+            self.adding_tickers.add(ticker);config=copy.deepcopy(self.settings)
+        try:
+            resolved=data_service.resolve_security(ticker,config)
+            if not resolved.get('ok'):return resolved
+            main.save_snapshot([resolved['quote']],[])
+            with self.lock:
+                updated=copy.deepcopy(self.settings)
+                if ticker not in updated['watchlist']:updated['watchlist'].append(ticker)
+                updated.setdefault('securities',{})[ticker]=resolved['security']
+                main.save_settings(updated);self.settings=updated;self._reload_tracking_data()
+                self.revision+=1
+            self._sync_tracking_async(ticker)
+            return {'ok':True,'ticker':ticker,'message':f'{ticker} 已添加，正在同步估值、目标价和资讯'}
+        except Exception:
+            logging.exception('Add tracking failed: %s',ticker)
+            return {'ok':False,'message':'添加未完成，请检查连接后重试'}
+        finally:
+            with self.lock:self.adding_tickers.discard(ticker)
+
+    def remove_tracking(self,raw):
+        try:ticker=securities.normalize(raw)
+        except ValueError as error:return {'ok':False,'message':str(error)}
+        with self.lock:
+            updated={**self.settings,'watchlist':[t for t in self.settings['watchlist'] if t!=ticker]}
+            try:main.save_settings(updated)
+            except OSError:return {'ok':False,'message':'跟踪列表保存失败，请稍后重试'}
+            self.settings=updated;self.tracking_sync.pop(ticker,None)
+            self._reload_tracking_data();self.revision+=1
+        return {'ok':True,'message':f'{ticker} 已移出跟踪，实际持仓保留'}
+
+    def _sync_tracking_async(self,ticker):
+        with self.lock:
+            if self.tracking_sync.get(ticker)=='正在更新':return
+            self.tracking_sync[ticker]='正在更新';config=copy.deepcopy(self.settings);self.revision+=1
+        def work():
+            completed=0
+            try:
+                with ThreadPoolExecutor(max_workers=5) as pool:
+                    jobs={pool.submit(data_service.fetch_quotes,[ticker],config):'quotes',
+                          pool.submit(data_service.fetch_estimates,[ticker],config):'estimates',
+                          pool.submit(data_service.fetch_histories,[ticker],config):'histories',
+                          pool.submit(data_service.fetch_comparison,[ticker],config):'comparisons',
+                          pool.submit(data_service.search_news,ticker+' company earnings guidance',config,
+                                      main.sentiment_score,main.impact_level,[ticker]):'news'}
+                    if securities.is_fund(ticker,config):jobs[pool.submit(fund_valuation.fetch_fund_valuations,config)]='funds'
+                    for future in as_completed(jobs):
+                        kind=jobs[future]
+                        try:
+                            rows,health=future.result()
+                            health=health if isinstance(health,list) else [health]
+                            if kind=='news':
+                                if rows:
+                                    main.save_events(rows)
+                                    with self.lock:self.news=merge_news(self.news,rows)
+                                    self._start_translation()
+                            elif kind=='funds':
+                                if rows:
+                                    with self.lock:self.fund_valuations={**self.fund_valuations,**rows};funds=copy.deepcopy(self.fund_valuations)
+                                    main.save_market_extra('fund_valuations',funds)
+                            else:
+                                args={kind:rows};main.save_snapshot(args.pop('quotes',[]),health,**args)
+                            if rows:completed+=1
+                            with self.lock:self._reload_tracking_data();self.revision+=1
+                        except Exception:logging.exception('New tracking sync failed: %s %s',ticker,kind)
+                with self.lock:
+                    name=(self.settings.get('securities',{}).get(ticker) or {}).get('name')
+                if name and ticker not in COMPANY_NAMES:self.translation.translate_missing([name],config)
+            finally:
+                with self.lock:
+                    if ticker in self.settings['watchlist']:
+                        self.tracking_sync[ticker]='' if completed else '部分数据待刷新'
+                    self.revision+=1
+                self._start_model()
+        threading.Thread(target=work,daemon=True).start()
 
     def save_position(self,ticker,quantity,cost):
         try:main.save_position(ticker,float(quantity),float(cost))

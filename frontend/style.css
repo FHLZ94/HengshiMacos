@@ -209,3 +209,14 @@ button,input,select,textarea{font-family:inherit;font-size:13px}
 @media(max-width:700px){.rotation-toolbar{align-items:flex-start;flex-direction:column}.rotation-chart-wrap{height:440px}.rotation-insight{padding:18px}.decision-card{padding:15px}.section-nav a{padding:9px 11px}}
 /* Section anchors account for the full tab bar. */
 .topbar{background:#fff}.section-nav{height:auto;min-height:56px}.section,.pulse-band{scroll-margin-top:140px}.decision-status{background:#f1f7f8;border-left-color:#8cc5be;color:#567683;font-weight:500}
+/* Editable tracking cards keep the select action and remove action separate. */
+article.decision-card{position:relative;padding:0;display:block;overflow:hidden;min-height:240px}
+.decision-select{width:100%;min-height:240px;display:flex;flex-direction:column;gap:7px;padding:18px;border:0;background:transparent;text-align:left;color:inherit;cursor:pointer}
+.decision-select:focus-visible{outline:2px solid #5ebfb0;outline-offset:-3px;border-radius:9px}
+.decision-select .decision-card-top{padding-right:24px}.decision-security-name{font-size:12px;line-height:1.4;color:#587789}
+.tracking-remove{position:absolute;top:9px;right:8px;width:26px;height:26px;display:flex;align-items:center;justify-content:center;border:0;border-radius:7px;background:transparent;color:#9eafb9;cursor:pointer;transition:background .15s,color .15s}
+.tracking-remove svg{width:15px;height:15px}.tracking-remove:hover,.tracking-remove:focus-visible{background:#fff0f1;color:#c25c68}.tracking-remove:disabled{opacity:.35;cursor:wait}
+#trackingTicker{display:block;width:100%;height:44px;border:1px solid #d3dfe5;border-radius:8px;padding:0 12px;margin-top:8px;text-transform:uppercase;font-size:16px;font-weight:600;letter-spacing:.4px}
+.tracking-feedback{min-height:24px;font-size:12px;line-height:1.6;color:#6a8290;margin:10px 0 0}#saveTracking:disabled{opacity:.6;cursor:wait}
+.software-info{border-top:1px solid #e5ecef;margin-top:20px;padding-top:13px;font-size:12px;color:#69818f;display:flex;justify-content:space-between;gap:20px}
+@media(max-width:700px){.decision-select{padding:15px}}

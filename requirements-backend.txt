@@ -5,3 +5,4 @@ googlenewsdecoder>=0.2,<1
 pyinstaller>=6.11.0
 numpy>=2.2,<3
 tzdata>=2025.2
+pypdf>=6,<7

@@ -30,7 +30,7 @@ jobs:
           tests.test_data_service tests.test_market_model tests.test_market_view
           tests.test_signals tests.test_translation_service tests.test_valuation_history
           tests.test_valuation tests.test_event_intelligence tests.test_desktop_state
-          tests.test_research_revision
+          tests.test_research_revision tests.test_tracking
       - name: 构建 Intel 后端
         run: >-
           python -m PyInstaller --noconfirm --clean --onefile --console

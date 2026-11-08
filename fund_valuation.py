@@ -2,10 +2,26 @@
 from datetime import date, datetime, timezone
 import re
 from lxml import html
+from io import BytesIO
+from pypdf import PdfReader
 import requests
 
 URLS = {'QQQ':'https://worldperatio.com/index/nasdaq-100/',
         'SPY':'https://worldperatio.com/index/sp-500/'}
+VGT_FACTSHEET='https://fund-docs.vanguard.com/F0958.pdf'
+
+
+def parse_vanguard_vgt(text,now=None):
+    plain=' '.join(text.split())
+    if not re.search(r'Vanguard Information Technology ETF\s*\|\s*VGT',plain):raise ValueError('基金身份不匹配')
+    day=re.search(r'As of ([A-Za-z]+ \d{1,2}, \d{4})',plain)
+    value=re.search(r'Price/earnings ratio\s+([\d.]+)x',plain,re.I)
+    if not day or not value:raise ValueError('发行人PE或日期缺失')
+    asof=datetime.strptime(day.group(1),'%B %d, %Y').date()
+    if asof>(now or datetime.now(timezone.utc)).date():raise ValueError('发行人报告日期超前')
+    return dict(ticker='VGT',pe=float(value.group(1)),asof=asof.isoformat(),source='先锋官方季度报告',
+                url=VGT_FACTSHEET,basis='发行人组合市盈率（季度报告口径）',history=[],percentile=None,
+                years=0,samples=0,fetched_at=datetime.now(timezone.utc).isoformat(timespec='seconds'))
 
 
 def percentile(snapshot,years=10):
@@ -50,11 +66,19 @@ def fetch_fund_valuations(config):
     def one(ticker,url):
         try:
             r=http_get(url,headers=HEADERS,timeout=(4,10),proxies=configured_proxy(config))
-            r.raise_for_status();return ticker,parse_world_pe(r.text,ticker,url),None
-        except (requests.RequestException,ValueError,TypeError) as e:return ticker,None,type(e).__name__
+            r.raise_for_status()
+            if ticker=='VGT':
+                if len(r.content)>5_000_000:raise ValueError('发行人报告大小异常')
+                reader=PdfReader(BytesIO(r.content))
+                row=parse_vanguard_vgt('\n'.join(page.extract_text() or '' for page in reader.pages[:3]))
+            else:row=parse_world_pe(r.text,ticker,url)
+            return ticker,row,None
+        except Exception as e:return ticker,None,type(e).__name__
     rows={};health=[]
     with ThreadPoolExecutor(max_workers=3) as pool:
-        fs=[pool.submit(one,t,u) for t,u in URLS.items()]
+        sources=dict(URLS)
+        if 'VGT' in config.get('watchlist',[]):sources['VGT']=VGT_FACTSHEET
+        fs=[pool.submit(one,t,u) for t,u in sources.items()]
         for f in as_completed(fs):
             t,row,error=f.result()
             if row:rows[t]=row

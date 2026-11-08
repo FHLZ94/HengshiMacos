@@ -216,19 +216,22 @@ function annualCaption(annual) {
 function renderDecisions() {
   const known=state.actions.filter(item=>item.metric).length;
   $('#decisionStatus').textContent=`${known}个标的可评估 · 名称后为最近报价；关注区间为条件式买入研究区域，一年空间按区间买入价计算。`;
-  $('#decisionGrid').innerHTML=state.actions.map(item=>`<button type="button" class="decision-card ${selectedAction===item.ticker?'selected':''}" data-action="${escapeHtml(item.ticker)}">
-    <span class="decision-card-top"><strong>${escapeHtml(item.ticker)} <span class="decision-current">${item.current_price==null?'—':'$'+number(item.current_price)}</span></strong>${item.held?'<em class="held-tag">已持有</em>':''}</span>
-    <span class="decision-quote-time">${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_asof || '等待行情')}</span>
-    <span class="action-label ${item.advice.action.includes('风险')?'risk':''}">${escapeHtml(item.advice.action)}</span>
-    <span class="decision-prices">${item.advice.in_watch_zone?'已进入关注区':'关注区间'} ${item.advice.watch_zone ? '$'+number(item.advice.watch_zone[0])+'–'+number(item.advice.watch_zone[1]) : '待计算'}</span>
-    <span class="annual-caption">${escapeHtml(annualCaption(item.annual))}</span>
-    <span class="basis">${escapeHtml(item.advice.basis)}</span></button>`).join('');
-  if (selectedAction==null && state.actions.length)selectedAction=state.actions[0].ticker;
+  $('#decisionGrid').innerHTML=state.actions.map(item=>`<article class="decision-card ${selectedAction===item.ticker?'selected':''}">
+    <button type="button" class="decision-select" data-action="${escapeHtml(item.ticker)}" aria-label="查看${escapeHtml(item.ticker)}交易参考">
+      <span class="decision-card-top"><strong>${escapeHtml(item.ticker)} <span class="decision-current">${item.current_price==null?'—':'$'+number(item.current_price)}</span></strong>${item.held?'<em class="held-tag">已持有</em>':''}</span>
+      <span class="decision-security-name">${escapeHtml(item.name || '')}</span>
+      <span class="decision-quote-time">${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_asof || '等待行情')}${item.sync_status==='正在更新'?' · 数据更新中':''}</span>
+      <span class="action-label ${item.advice.action.includes('风险')?'risk':''}">${escapeHtml(item.advice.action)}</span>
+      <span class="decision-prices">${item.advice.in_watch_zone?'已进入关注区':'关注区间'} ${item.advice.watch_zone ? '$'+number(item.advice.watch_zone[0])+'–'+number(item.advice.watch_zone[1]) : '正在获取日线并计算'}</span>
+      <span class="annual-caption">${escapeHtml(annualCaption(item.annual))}</span>
+      <span class="basis">${escapeHtml(item.advice.basis)}</span>
+    </button><button type="button" class="tracking-remove" data-remove-tracking="${escapeHtml(item.ticker)}" title="移出跟踪，保留实际持仓" aria-label="移出跟踪${escapeHtml(item.ticker)}"><i data-lucide="x"></i></button></article>`).join('') || '<div class="empty-list">尚未设置跟踪标的，点击右上角「添加标的」开始。</div>';
+  if (!state.actions.some(item=>item.ticker===selectedAction))selectedAction=state.actions[0]?.ticker || null;
   renderDecisionDetail();
 }
 function renderDecisionDetail() {
   const item=state.actions.find(action=>action.ticker===selectedAction);
-  $('#decisionGrid').querySelectorAll('.decision-card').forEach(card=>card.classList.toggle('selected',card.dataset.action===selectedAction));
+  $('#decisionGrid').querySelectorAll('.decision-card').forEach(card=>card.classList.toggle('selected',card.querySelector('[data-action]')?.dataset.action===selectedAction));
   if (!item){$('#decisionDetail').innerHTML='<div class="empty-detail">选择标的查看依据</div>';return;}
   const a=item.advice,annual=item.annual;
   const history=annual?.available ? `<p>相似月度起点的一年正收益占比 ${number(annual.historical_positive_pct,1)}%，中位回报 ${signed(annual.median_return)}，历史10%–90%分布 ${signed(annual.return_range[0])}～${signed(annual.return_range[1])}。${annual.samples}个月度起点，仅${annual.independent_periods}个不重叠年度区间，不能作为已校准的一年盈利概率。</p><p>${escapeHtml(annual.definition)}</p>` : `<p>${escapeHtml(annual?.reason || '历史不足')}</p>`;
@@ -242,12 +245,12 @@ function renderPortfolio() {
   const priced = state.portfolio.filter((item) => item.value != null);
   const value = priced.reduce((sum, item) => sum + item.value, 0);
   const profit = priced.reduce((sum, item) => sum + item.profit, 0);
-  $('#portfolioSummary').innerHTML = `<div class="portfolio-stat"><label>观察标的</label><strong>${state.watch.length}</strong></div>
+  $('#portfolioSummary').innerHTML = `<div class="portfolio-stat"><label>跟踪标的</label><strong>${state.actions.length}</strong></div>
     <div class="portfolio-stat"><label>已录入持仓</label><strong>${state.portfolio.length}</strong></div>
     <div class="portfolio-stat"><label>可计价市值</label><strong>$${number(value)}</strong></div>
     <div class="portfolio-stat"><label>未实现盈亏</label><strong class="${tone(profit)}">${profit > 0 ? '+' : ''}$${number(profit)}</strong></div>`;
-  const funds=state.watch.filter((item) => ['QQQ','SPY','QQQM','SMH'].includes(item.ticker));
-  const stocks=state.watch.filter((item) => !['QQQ','SPY','QQQM','SMH','^VIX'].includes(item.ticker))
+  const funds=state.watch.filter(item=>item.is_fund && !item.ticker.startsWith('^'));
+  const stocks=state.watch.filter(item=>!item.is_fund)
     .sort((a,b) => (b.upside_pct ?? -Infinity)-(a.upside_pct ?? -Infinity));
   $('#fundTable tbody').innerHTML = funds.map((item) => `<tr data-watch="${escapeHtml(item.ticker)}" class="${selectedWatch === item.ticker ? 'selected' : ''}">
     <td>${escapeHtml(item.ticker)} ${item.is_held ? '<em class="held-tag">已持有</em>' : ''} <span class="muted">${escapeHtml(item.name)}</span></td>
@@ -258,8 +261,8 @@ function renderPortfolio() {
   $('#watchTable tbody').innerHTML = stocks.map((item) => `<tr data-watch="${escapeHtml(item.ticker)}" class="${selectedWatch === item.ticker ? 'selected' : ''}">
     <td title="${escapeHtml(item.name)}">${escapeHtml(item.ticker)} ${item.is_held ? '<em class="held-tag">已持有</em>' : ''} <span class="muted">${escapeHtml(item.name)}</span></td>
     <td title="${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_source)}">${item.price == null ? '无报价' : '$' + number(item.price)}<small class="price-label">${escapeHtml(item.price_label)}${item.session_change_pct!=null?' · '+signed(item.session_change_pct):''}</small></td><td class="${tone(item.change)}">${signed(item.change)}</td>
-    <td>${number(item.valuation?.eps_used)}</td><td title="${escapeHtml(item.neutral_source)}">${item.neutral_pe == null ? '—' : number(item.neutral_pe,1) + ' 倍'}</td>
-    <td>${item.fair_price == null ? '—' : '$' + number(item.fair_price)}</td>
+    <td>${number(item.valuation?.eps_used)}</td><td title="当前前瞻PE＝最近报价÷未来12个月预期EPS；情景倍数用于计算合理价。${escapeHtml(item.neutral_source)}">${item.ntm_pe == null ? '待盈利预期' : number(item.ntm_pe,1)+' 倍'}<small class="price-label">${item.neutral_pe == null ? '情景倍数待补充' : '情景 '+number(item.neutral_pe,1)+' 倍'}</small></td>
+    <td>${item.fair_price == null ? '待可比倍数' : '$' + number(item.fair_price)}</td>
     <td class="${tone(item.upside_pct)}">${signed(item.upside_pct)}</td>
     <td>${item.analyst_target == null ? '—' : '$' + number(item.analyst_target)}</td>
     <td class="muted" title="${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_source)}">${escapeHtml(item.asof || '来源不可用')}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">观察列表中暂无个股</td></tr>';
@@ -276,9 +279,9 @@ function renderValuationDetail() {
   $('#fundTable tbody').querySelectorAll('tr').forEach((row) => row.classList.toggle('selected', row.dataset.watch === selectedWatch));
   if (!item) { $('#valuationDetail').innerHTML = '<div class="empty-detail">选择标的查看估值依据</div>'; return; }
   const news = state.news.filter((article) => article.tickers.includes(item.ticker)).slice(0,2);
-  const isFund=['QQQ','SPY','QQQM','SMH'].includes(item.ticker);
+  const isFund=!!item.is_fund;
   const fv=item.fund_valuation;
-  const basis = isFund ? (fv ? `当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · 估值日期 ${fv.asof}。历史分位 ${number(fv.percentile,1)}%，在 ${fv.start} 至 ${fv.end} 的 ${fv.samples} 个月度PE样本中比较；分位越高，历史相对估值越贵。该口径不能和其他来源的前瞻PE直接混用。` : '尚未取得可复核的基金PE历史，取得后显示估值分位。') :
+  const basis = isFund ? (fv ? `当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · 估值日期 ${fv.asof}。${fv.percentile!=null ? `历史分位 ${number(fv.percentile,1)}%，在 ${fv.start} 至 ${fv.end} 的 ${fv.samples} 个月度PE样本中比较；分位越高，历史相对估值越贵。` : '该发行人报告仅提供当期PE，历史序列不足时不计算分位。'}不同来源和口径的PE不直接混用。` : '尚未取得可复核的基金PE历史，取得后显示估值分位。') :
     item.eps_ntm == null ? '未来四季一致预期不足，暂不计算未来12月市盈率。' : `未来四季每股盈利合计 ${number(item.eps_ntm)} · ${item.eps_period} · ${item.eps_source} · 抓取 ${item.eps_asof}`;
   const analyst = item.analyst_target == null ? '分析师一年目标价：暂无' : `分析师一年目标价 $${number(item.analyst_target)} · ${item.target_source} · 抓取 ${item.target_asof}`;
   const average = item.one_year_pe_average == null ? `一年平均前瞻市盈率：历史快照积累中（${item.one_year_pe_samples} 个日快照）` : `一年平均前瞻市盈率：${number(item.one_year_pe_average,1)} 倍 · 本机逐日历史`;
@@ -286,12 +289,13 @@ function renderValuationDetail() {
   const valuation=item.valuation || {};
   const fair=item.fair_price == null ? '当前缺少可核对的盈利或市盈率，暂不能计算情景价。' :
     `${number(valuation.eps_used)} × ${number(valuation.pe_used,1)} 倍 = $${number(item.fair_price)}，相对最近报价 ${signed(item.upside_pct)}。盈利口径：${valuation.earnings_basis}；倍数口径：${valuation.pe_basis}。`;
+  const earningsEvidence=valuation.reported_eps_ttm!=null ? `<details class="model-method"><summary>查看同源财报EPS与估值口径</summary><p>历史四季供应商EPS合计 ${number(valuation.reported_eps_ttm)}，覆盖 ${escapeHtml(valuation.reported_period_zh || valuation.reported_period)}。${escapeHtml(valuation.pe_note)}</p>${(valuation.reported_quarters_zh || []).map(q=>`<p>${escapeHtml(q.period)}：每股盈利 ${number(q.eps)} · 披露 ${escapeHtml(q.reported)}</p>`).join('')}<button type="button" class="small-command" data-open-management="${escapeHtml(valuation.reported_source)}">核对原始财报数据</button>${valuation.accounting_ttm_eps!=null && valuation.accounting_ttm_eps<=0 ? '<p>会计口径历史盈利为负，传统滚动PE不适用；上表显示未来12个月前瞻PE，情景倍数采用明确标注的供应商财报口径。</p>' : ''}</details>` : '';
   const guidance = valuation.management_source ? `<div>管理层指引来源：<button type="button" class="small-command" data-open-management="${escapeHtml(valuation.management_source)}">查看公司公告</button></div>` : '';
   $('#valuationDetail').innerHTML = `<div class="valuation-layout"><div class="valuation-copy"><strong>${escapeHtml(item.ticker)} · ${escapeHtml(item.name)}</strong>
-    <div>${escapeHtml(basis)}</div>${isFund ? '' : `<div class="valuation-result">${escapeHtml(fair)}</div>${guidance}<div>${escapeHtml(average)}</div><div>${escapeHtml(analyst)}</div>`}
+    <div>${escapeHtml(basis)}</div>${isFund ? '' : `<div class="valuation-result">${escapeHtml(fair)}</div>${guidance}<div>${escapeHtml(average)}</div><div>${escapeHtml(analyst)}</div>${earningsEvidence}`}
     <div>${escapeHtml(comparison)}</div>${news.length ? `<div>${escapeHtml(news.map((article) => article.title).join('；'))}</div>` : ''}</div>
     <div class="valuation-controls"><button type="button" class="quiet-button" id="toggleHolding">${item.is_held ? '取消持有标记' : '标记为已持有'}</button>
-    ${isFund ? '' : `<button type="button" class="quiet-button" id="addGuidance"><i data-lucide="file-chart-column-increasing"></i> 管理层指引</button><form class="neutral-form" id="neutralForm"><label for="neutralPe">估值倍数</label><input id="neutralPe" type="number" min="0.1" max="500" step="0.1" value="${item.neutral_pe ?? ''}" placeholder="倍数" required><button type="submit" class="quiet-button">保存倍数</button></form>`}</div></div>`;
+    ${isFund ? '' : `<button type="button" class="quiet-button" id="addGuidance"><i data-lucide="file-chart-column-increasing"></i> 管理层指引</button><form class="neutral-form" id="neutralForm"><label for="neutralPe">中性情景倍数</label><input id="neutralPe" type="number" min="0.1" max="500" step="0.1" value="${item.neutral_pe ?? ''}" placeholder="倍数" required><button type="submit" class="quiet-button">保存倍数</button></form>`}</div></div>`;
   icons();
 }
 
@@ -302,7 +306,7 @@ function renderSettings() {
   if (document.activeElement !== $('#modelInput')) $('#modelInput').value=state.settings.openai_model || '';
 }
 function syncActiveTab(){
-  const anchor=document.querySelector('.topbar').getBoundingClientRect().bottom+32;
+  const anchor=document.querySelector('.topbar').getBoundingClientRect().bottom+120;
   let current='marketPulse';
   document.querySelectorAll('main > section').forEach(section=>{if(section.getBoundingClientRect().top<=anchor)current=section.id;});
   document.querySelectorAll('.section-nav a').forEach(link=>link.classList.toggle('active',link.getAttribute('href')==='#'+current));
@@ -347,7 +351,17 @@ function bind() {
     if (result?.ok && article) {aiResults.set(article.url,result.analysis);renderEventDetail();}
     else {toast(result?.message || '本地分析未完成');renderEventDetail();}
   });
-  $('#decisionGrid').addEventListener('click', (event) => {const card=event.target.closest('[data-action]');if (card) {selectedAction=card.dataset.action;renderDecisionDetail();}});
+  $('#decisionGrid').addEventListener('click',async event=>{
+    const remove=event.target.closest('[data-remove-tracking]');
+    if(remove){remove.disabled=true;const result=await call('remove_tracking',remove.dataset.removeTracking);toast(result.message || '已处理');await poll();return;}
+    const card=event.target.closest('[data-action]');if(card){selectedAction=card.dataset.action;renderDecisionDetail();}
+  });
+  $('#addTracking').addEventListener('click',()=>{$('#trackingForm').reset();$('#trackingFeedback').textContent='';$('#trackingDialog').showModal();$('#trackingTicker').focus();});
+  $('#trackingForm').addEventListener('submit',async event=>{
+    event.preventDefault();const button=$('#saveTracking');button.disabled=true;button.textContent='正在识别标的…';$('#trackingFeedback').textContent='正在核对证券代码及交易市场';
+    try{const result=await call('add_tracking',$('#trackingTicker').value);if(result.ok){$('#trackingDialog').close();toast(result.message);await poll();}else{$('#trackingFeedback').textContent=result.message || '暂时无法添加，请重试';}}
+    finally{button.disabled=false;button.textContent='添加并同步';}
+  });
   $('#watchTable').addEventListener('click', (event) => {const row=event.target.closest('[data-watch]');if (row) {selectedWatch=row.dataset.watch;renderValuationDetail();}});
   $('#fundTable').addEventListener('click', (event) => {const row=event.target.closest('[data-watch]');if (row) {selectedWatch=row.dataset.watch;renderValuationDetail();}});
   $('#valuationDetail').addEventListener('submit', async (event) => {if (event.target.id !== 'neutralForm') return;event.preventDefault();const result=await call('save_neutral_pe',selectedWatch,$('#neutralPe').value);toast(result.message || '已处理');await poll();});
