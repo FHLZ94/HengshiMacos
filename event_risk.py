@@ -47,6 +47,19 @@ def assess_events(news,analyses=None,now=None):
         official=host.endswith('.gov') or host in ('federalreserve.gov','sec.gov') or corporate
         social=host in ('x.com','twitter.com','www.x.com','www.twitter.com') or article.get('source')=='X 公开帖子'
         stage,material=classify(text,official)
+        # The user's book is sensitive to policy and supply-chain shocks. Macro /
+        # geopolitical transmission gets more weight only when the article also
+        # names a credible policy or technology channel.
+        category_weight=1.0
+        if POLICY.search(text) and (AI.search(text) or SEMIS.search(text)):
+            category_weight=1.25
+        elif SEMIS.search(text) or re.search(r'advanced packaging|hbm|memory|封装|存储',text,re.I):
+            category_weight=1.15
+        elif re.search(r'guidance|earnings|capex|指引|财报|资本开支',text,re.I):
+            category_weight=1.0
+        elif stage in ('公开表态','提议或呼吁'):
+            category_weight=.6
+        material=round(material*category_weight,1)
         publisher=(article.get('publisher') or article.get('source') or '').lower()
         trust=1 if official else .9 if any(p in publisher for p in ('reuters','路透','bloomberg','彭博','cnbc','new york times','纽约时报')) else .55 if social else .7
         independent=len(set(article.get('independent_publishers') or []))
@@ -63,13 +76,31 @@ def assess_events(news,analyses=None,now=None):
         events.append({'title':article.get('title'),'url':article.get('link'),'published':stamp.isoformat(),
              'stage':stage,'direction':direction,'scores':scores,'verified':bool(evidence>=.75 and not disputed and not social),
              'evidence_label':'有可核对的原始证据' if evidence>=.75 and not disputed else '待进一步核验',
-             'factors':{'materiality':material,'source_reliability':trust,'evidence':evidence,'recency':round(decay,3)},
+             'factors':{'materiality':material,'category_weight':category_weight,'source_reliability':trust,'evidence':evidence,'recency':round(decay,3)},
              'social':social})
     events.sort(key=lambda e:max(e['scores'].values()),reverse=True)
     result={'events':events[:8],'latest_published':latest.isoformat() if latest else None,
             'coverage_fresh':bool(latest and now-latest<=timedelta(hours=48)),
             'definition':'事件影响分＝事件强度×来源可靠性×证据充分度×指数相关度×时效衰减；属于风险排序，不是涨跌概率，也不直接加减概率百分点',
             'news_probability_adjustment':None,'news_model_status':'尚无足够的历史时点新闻样本，事件仅调整风险评级和动作条件'}
+    recent=[event for event in events if (now-_stamp(event['published'])).total_seconds()<=24*3600]
+    for name,keys in (('半导体产业链',('SMH',)),('大科技与AI',('QQQ',))):
+        scoped=[e for e in recent if any(e['scores'].get(k,0)>=8 for k in keys)]
+        signed=sum(e['direction']*max(e['scores'].get(k,0) for k in keys) for e in scoped)
+        gross=sum(max(e['scores'].get(k,0) for k in keys) for e in scoped)
+        normalized=(signed/gross*100) if gross else 0
+        if normalized>=45:label='明显偏正面'
+        elif normalized>=15:label='偏正面'
+        elif normalized<=-45:label='极度负面'
+        elif normalized<=-15:label='偏负面'
+        else:label='中性整理'
+        stance={'label':label,'net_score':round(normalized,1),
+            'event_count':len(scoped),'gross_score':round(gross,1),
+            'verified_count':sum(bool(e['verified']) for e in scoped),
+            'top_event':max(scoped,key=lambda e:max(e['scores'].get(k,0) for k in keys),default=None),
+            'window_hours':24,'definition':'最近24小时相关情报按事件强度、来源、证据、行业相关度与时效衰减聚合；是信息情绪档位，不是指数涨跌概率'}
+        result.setdefault('stance',{})[name]=stance
+        result[name]=stance
     for ticker in ('QQQ','SMH'):
         relevant=[e for e in events if e['scores'][ticker]>=8]
         negatives=[e for e in relevant if e['direction']<0]

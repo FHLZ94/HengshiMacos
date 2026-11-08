@@ -24,6 +24,12 @@ class DataServiceTests(unittest.TestCase):
         self.assertIn('SMH 行业相关',data_service.intelligence_topics(tickers))
         self.assertIn('存储',data_service.intelligence_topics([],'SK Hynix expands HBM memory'))
 
+    def test_global_intelligence_filters_irrelevant_geopolitical_and_crime_stories(self):
+        self.assertFalse(data_service.intelligence_relevant('Poland investigates a terror incident', 'national police inquiry', []))
+        self.assertFalse(data_service.intelligence_relevant('Celebrity event draws attention', 'entertainment story', []))
+        self.assertTrue(data_service.intelligence_relevant('Commerce Department tightens semiconductor export controls', 'AI chip supply chain policy', []))
+        self.assertTrue(data_service.intelligence_relevant('Oracle expands AI datacenter capacity', 'capital expenditure guidance', ['ORCL']))
+
     def test_impact_words_do_not_match_inside_other_words(self):
         self.assertEqual(main.impact_level('Forward outlook for software'), '低')
         self.assertEqual(main.impact_level('War disrupts chip supply'), '高')

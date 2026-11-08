@@ -87,6 +87,9 @@ function renderEvents() {
   const held = new Set(state.watch.filter((item) => item.is_held).map((item) => item.ticker));
   const rank = {'S1':4,'S2':3,'S3':2,'S4':1};
   const focusPool = recent;
+  const stance=state.market.event_risk?.stance || {};
+  const stanceCard=(name,icon)=>{const item=stance[name];if(!item)return `<div class="stance-card"><span class="stance-title">${icon} ${escapeHtml(name)}</span><strong>等待相关情报</strong><small>最近24小时暂无足够的产业链事件</small></div>`;const tone=item.net_score>15?'positive':item.net_score<-15?'negative':'neutral';const top=item.top_event;return `<div class="stance-card ${tone}"><span class="stance-title">${icon} ${escapeHtml(name)}</span><strong>${escapeHtml(item.label)}</strong><span class="stance-score">影响分 ${item.net_score>0?'+':''}${number(item.net_score,1)} / 100</span><small>${item.event_count} 条相关事件 · ${item.verified_count} 条有核验证据${top?` · 最高影响：${escapeHtml(top.stage)}`:''}</small></div>`;};
+  $('#eventStanceDashboard').innerHTML=`<div class="stance-heading"><strong>过去24小时产业链信息影响</strong><span>宏观政策/地缘传导权重1.25 · 半导体与AI产业权重1.15 · 普通公司信息1.0 · 单条公开表态0.6</span></div><div class="stance-grid">${stanceCard('半导体产业链','◈')}${stanceCard('大科技与AI','◌')}</div><p class="stance-method">影响分用于信息情绪排序：事件强度 × 来源可靠性 × 证据充分度 × 行业相关度 × 时效衰减，并按上述类别加权；不是市场涨跌概率。泛治安、恐怖主义和无产业传导的国家新闻不会进入该仪表盘。</p>`;
   const lead = [...focusPool].sort((a,b) =>
     ((b.analysis?.score ?? rank[b.grade]*12)-(a.analysis?.score ?? rank[a.grade]*12)) ||
     (Number(b.tickers.some((ticker) => held.has(ticker))) - Number(a.tickers.some((ticker) => held.has(ticker)))) ||

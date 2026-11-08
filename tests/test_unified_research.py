@@ -37,6 +37,13 @@ class EventRiskTests(unittest.TestCase):
         return {'title':title,'summary':title,'link':url,'published':(self.now-timedelta(hours=hours)).isoformat(),'source':'Reuters','publisher':'Reuters','tickers':['SMH'],'independent_publishers':[]}
     def model(self):
         return {'targets':{t:{'date':'2026-11-06','up3_pct':58,'up5_pct':57,'setup':{'oversold':True,'recovery_confirmed':True,'lower_tail_pct':2}} for t in ('QQQ','SMH')}}
+    def test_last_24_hours_stance_uses_industry_weight_and_keeps_proposal_below_enacted(self):
+        proposal=self.news('Senator calls for a moratorium on AI data centers','https://www.senate.gov/statement')
+        enacted=self.news('Commerce Department semiconductor export ban signed into law and effective immediately')
+        result=event_risk.assess_events([proposal,enacted],now=self.now)
+        self.assertIn(result['半导体产业链']['label'],('偏负面','极度负面','中性整理'))
+        self.assertEqual(result['半导体产业链']['window_hours'],24)
+
     def test_senator_proposal_is_not_treated_as_enacted_policy(self):
         n=self.news('Senator calls for a moratorium on AI data centers','https://www.senate.gov/statement')
         r=event_risk.assess_events([n],now=self.now)

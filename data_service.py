@@ -32,6 +32,13 @@ SP500_LIST = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / '
 NETWORK_LIMIT = threading.BoundedSemaphore(6)
 SECTOR_TICKERS = ('XLK','SMH','XLV','XLP','XLU','XLY','XLF','XLE','XLI','XLC','XLRE','XLB','TLT','GLD')
 ETF_TICKERS = securities.FUND_CODES
+INTELLIGENCE_TERMS = ('semiconductor','chip','ai infrastructure','artificial intelligence','data center','datacenter',
+                      'advanced packaging','chiplet','hbm','memory','optical interconnect','photonic','foundry',
+                      'export control','export ban','tariff','commerce department','white house','congress','senate',
+                      'federal reserve','interest rate','capex','cloud compute','supply chain','advanced packaging',
+                      '半导体','芯片','人工智能','算力','数据中心','先进封装','芯粒','存储','光通信','光模块','晶圆','封装','出口管制','商务部','白宫','国会','供应链','资本开支')
+IRRELEVANT_TERMS = ('terrorism','terrorist','terrorist attack','murder','crime','poland investigation','poland probe',
+                     'celebrity','sports','entertainment','恐怖主义','恐袭','谋杀','犯罪','波兰调查','名人','体育','娱乐')
 
 
 def http_get(*args, **kwargs):
@@ -106,6 +113,19 @@ def clean(value):
     return ' '.join(html.unescape(re.sub(r'<[^>]+>', ' ', value or '')).split())
 
 
+def intelligence_relevant(title, summary, tickers=()):
+    """Keep stories with a credible path to the user's AI/semiconductor book."""
+    text=(title+' '+summary).casefold()
+    if tickers:return True
+    has_chain=any(term.casefold() in text for term in INTELLIGENCE_TERMS)
+    if not has_chain:return False
+    if any(term.casefold() in text for term in IRRELEVANT_TERMS):
+        # Generic crime/geopolitical stories stay out unless the same text also
+        # names an explicit technology, supply-chain or policy transmission.
+        return any(term.casefold() in text for term in ('semiconductor','chip','ai','data center','export control','tariff','半导体','芯片','人工智能','数据中心','出口管制','供应链'))
+    return True
+
+
 def event_profile(source, title, impact):
     text=title.casefold()
     official=source.startswith(('Federal Reserve', 'SEC'))
@@ -167,12 +187,14 @@ def _feed(source, url, config, sentiment_fn, impact_fn, watchlist):
             impact=impact_fn(body)
             grade,trust,horizon=event_profile(source,title,impact)
             publisher=clean((entry.get('source') or {}).get('title') or '')
+            tickers=ticker_matches(body, watchlist, config)
+            if not intelligence_relevant(title,summary,tickers):continue
             rows.append({'title': title, 'summary': summary, 'link': link,
                          'source': source, 'publisher': publisher,
                          'published': parse_date(entry.get('published')),
                          'impact': impact, 'grade': grade, 'credibility': trust, 'horizon': horizon,
                          'sentiment': score, 'label': label,
-                         'tickers': ticker_matches(body, watchlist, config)})
+                         'tickers': tickers})
         return rows, {'source': source, 'status': 'ok', 'count': len(rows),
                       'latency_ms': round((time.monotonic()-started)*1000), 'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
     except requests.Timeout:

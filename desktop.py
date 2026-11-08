@@ -525,6 +525,8 @@ class DesktopAPI:
                                               *(m.get('name','') for m in metadata.values())])
         public_news=[]
         for index,article in enumerate(sorted(news,key=lambda item:item.get('published',''),reverse=True)):
+            if not data_service.intelligence_relevant(article.get('title',''),article.get('summary',''),article.get('tickers',())):
+                continue
             grade=article.get('grade') or data_service.event_profile(article['source'],article['title'],article['impact'])[0]
             topics=data_service.intelligence_topics(article['tickers'],article['title'])
             if 'SMH 行业相关' in topics:
