@@ -217,7 +217,7 @@ function renderMarket() {
 }
 
 function annualCaption(item){
-  if(item.is_fund){const fv=item.fund_valuation;return `当前PE ${fv?.pe ? number(fv.pe,1)+'倍' : '待数据'} · 历史估值分位 ${fv?.percentile!=null ? number(fv.percentile,1)+' / 100' : '待历史数据'}`;}
+  if(item.is_fund){const fv=item.fund_valuation;return `当前PE ${fv?.pe ? number(fv.pe,1)+'倍' : '待数据'} · 历史估值分位 ${fv?.percentile!=null ? number(fv.percentile,1)+' / 100' : (fv?.history_status || '待历史数据')}`;}
   const annual=item.annual;return annual?.reference_price ? `未来12个月合理价值：$${number(annual.reference_price)} · ${signed(annual.upside_pct)}` : '未来12个月合理价值待有效数据';
 }
 function renderDecisions() {
@@ -244,7 +244,7 @@ function renderDecisionDetail() {
   const v=item.valuation || {},ref=v.reference || {};
   $('#decisionDetail').innerHTML=`<h3>${escapeHtml(item.ticker)} <span class="decision-current">${item.current_price==null?'—':'$'+number(item.current_price)}</span> · ${escapeHtml(a.action)}</h3>
     <p class="decision-quote-time">${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_asof)}${item.regular_close?' · 最近收盘 $'+number(item.regular_close):''}</p>
-    <div class="decision-price-row"><div><span>短线关注区间</span><strong>${a.watch_zone?'$'+number(a.watch_zone[0])+'–$'+number(a.watch_zone[1]):'待计算'}</strong></div><div><span>${item.is_fund?'当前PE / 历史估值分位':'未来12个月合理价值 / 空间'}</span><strong>${item.is_fund ? (item.fund_valuation?.pe ? number(item.fund_valuation.pe,1)+'倍' : 'PE待数据')+' / '+(item.fund_valuation?.percentile!=null ? number(item.fund_valuation.percentile,1)+' / 100' : '历史待数据') : item.reference_price?'$'+number(item.reference_price)+' / '+signed(item.upside_pct):'待有效数据'}</strong></div><div><span>风险失效价</span><strong>${a.risk_price?'$'+number(a.risk_price):'—'}</strong></div></div>
+    <div class="decision-price-row"><div><span>短线关注区间</span><strong>${a.watch_zone?'$'+number(a.watch_zone[0])+'–$'+number(a.watch_zone[1]):'待计算'}</strong></div><div><span>${item.is_fund?'当前PE / 历史估值分位':'未来12个月合理价值 / 空间'}</span><strong>${item.is_fund ? (item.fund_valuation?.pe ? number(item.fund_valuation.pe,1)+'倍' : 'PE待数据')+' / '+(item.fund_valuation?.percentile!=null ? number(item.fund_valuation.percentile,1)+' / 100' : (item.fund_valuation?.history_status || '历史待数据')) : item.reference_price?'$'+number(item.reference_price)+' / '+signed(item.upside_pct):'待有效数据'}</strong></div><div><span>风险失效价</span><strong>${a.risk_price?'$'+number(a.risk_price):'—'}</strong></div></div>
     <div class="decision-detail-grid"><div><span>参考价依据</span><p>${item.is_fund ? escapeHtml(item.fund_valuation ? item.fund_valuation.basis+' · '+item.fund_valuation.source+' · '+item.fund_valuation.asof : '正在获取基金组合PE及同口径历史；历史不足不生成分位') : escapeHtml(v.reference_label || '')+'。'+escapeHtml(v.reason || '')}</p></div><div><span>短线确认条件</span><p>${escapeHtml(a.confirm)}</p></div><div><span>失效与风险</span><p>${escapeHtml(a.invalidate)}</p></div></div><p class="method-note">${item.is_fund?'基金按当前PE与历史估值分位评估相对贵贱；分位越低，历史相对估值越低。':'参考空间＝未来12个月合理价值÷当前价－1，与下方估值表一致。'}关注区间属于短线价格条件。</p>`;
 
 }
@@ -281,7 +281,7 @@ function renderValuationDetail() {
   if (!item) { $('#valuationDetail').innerHTML = '<div class="empty-detail">选择标的查看估值依据</div>'; return; }
   const news = state.news.filter((article) => article.tickers.includes(item.ticker)).slice(0,2);
   const isFund=!!item.is_fund,v=item.valuation || {},ref=v.reference || {},fv=item.fund_valuation;
-  const fundCopy=fv?`当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · ${fv.asof}。${fv.percentile!=null?'近'+number(fv.years,0)+'年估值分位 '+number(fv.percentile,1)+'%。':'历史PE不足，不生成分位。'}`:'尚未取得可复核的基金PE';
+  const fundCopy=fv?`当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · ${fv.asof}。${fv.percentile!=null?'近'+number(fv.years,0)+'年估值分位 '+number(fv.percentile,1)+'%。':(fv.history_status || '历史序列暂缺。')}`:'尚未取得可复核的基金PE';
   const valueCopy=item.fair_price?`未来12个月合理价值 $${number(item.fair_price)}，相对当前价 ${signed(item.upside_pct)}。${v.reference_method==='management_history_median' ? '管理层未来12个月EPS '+number(v.eps_used)+' × 历史PE中位数 '+number(v.pe_used,2)+' 倍。' : '采用来源发布的分析师目标价中位数。'}`:'未来12个月合理价值暂缺。';
   $('#valuationDetail').innerHTML=`<div class="valuation-layout"><div class="valuation-copy"><strong>${escapeHtml(item.ticker)} · ${escapeHtml(item.name)}</strong><div>${escapeHtml(isFund?fundCopy:valueCopy)}</div>${!isFund?`<div>${escapeHtml(v.reason || '')}</div><div>价格依据：${escapeHtml(ref.source || v.reference_label)}${ref.fetched_at?' · 获取 '+new Date(ref.fetched_at).toLocaleString('zh-CN',{hour12:false}):''}</div>${ref.source_url?`<button type="button" class="small-command" data-open-management="${escapeHtml(ref.source_url)}">核对参考价来源</button>`:''}${ref.guidance_url?`<button type="button" class="small-command" data-open-management="${escapeHtml(ref.guidance_url)}">核对管理层指引</button>`:''}<p class="method-note">当前PE采用历史12个月会计盈利；亏损时不生成正PE。参考价在交易卡片、估值表与事件详情共用，不混用旧版情景价与平均目标价。</p>`:''}${news.length?`<div>${escapeHtml(news.map(n=>n.title).join('；'))}</div>`:''}</div><div class="valuation-controls"><button type="button" class="quiet-button" id="toggleHolding">${item.is_held?'取消持有标记':'标记为已持有'}</button>${!isFund?'<button type="button" class="quiet-button" id="addGuidance">管理层指引</button>':''}</div></div>`;
   icons();

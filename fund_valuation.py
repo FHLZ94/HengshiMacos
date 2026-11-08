@@ -8,6 +8,7 @@ import requests
 
 URLS = {'QQQ':'https://worldperatio.com/index/nasdaq-100/',
         'SPY':'https://worldperatio.com/index/sp-500/'}
+VGT_HISTORY_PROXY='https://worldperatio.com/sector/sp-500-information-technology'
 VGT_FACTSHEET='https://fund-docs.vanguard.com/F0958.pdf'
 SMH_FACTSHEET='https://www.vaneck.com/us/en/investments/semiconductor-etf-smh-fact-sheet.pdf'
 
@@ -86,6 +87,12 @@ def fetch_fund_valuations(config):
                 reader=PdfReader(BytesIO(r.content))
                 report='\n'.join(page.extract_text() or '' for page in reader.pages[:3])
                 row=parse_vanguard_vgt(report) if ticker=='VGT' else parse_vaneck_smh(report)
+                if ticker=='SMH':
+                    row['history_status']='发行人未公开历史PE序列；仅显示官方当前PE'
+                if ticker=='VGT':
+                    proxy=http_get(VGT_HISTORY_PROXY,headers=HEADERS,timeout=(5,15),proxies=configured_proxy(config))
+                    proxy.raise_for_status();history_row=parse_world_pe(proxy.text,'VGT',VGT_HISTORY_PROXY)
+                    row['history']=history_row['history'];row.update(percentile(row));row['history_status']='VGT历史分位采用标普500信息技术行业PE代理；当前PE仍来自先锋官方报告';row['history_proxy']=True
             else:row=parse_world_pe(r.text,ticker,url)
             return ticker,row,None
         except (requests.RequestException,ValueError,TypeError,KeyError) as first:
@@ -93,9 +100,10 @@ def fetch_fund_valuations(config):
                 r=http_get(url,headers=HEADERS,timeout=(8,25),proxies=configured_proxy(config,for_google=True))
                 r.raise_for_status()
                 if ticker=='SMH':
-                    reader=PdfReader(BytesIO(r.content));row=parse_vaneck_smh('\n'.join(page.extract_text() or '' for page in reader.pages[:3]))
+                    reader=PdfReader(BytesIO(r.content));row=parse_vaneck_smh('\n'.join(page.extract_text() or '' for page in reader.pages[:3]));row['history_status']='发行人未公开历史PE序列；仅显示官方当前PE'
                 elif ticker=='VGT':
                     reader=PdfReader(BytesIO(r.content));row=parse_vanguard_vgt('\n'.join(page.extract_text() or '' for page in reader.pages[:3]))
+                    proxy=http_get(VGT_HISTORY_PROXY,headers=HEADERS,timeout=(8,25),proxies=configured_proxy(config,for_google=True));proxy.raise_for_status();history_row=parse_world_pe(proxy.text,'VGT',VGT_HISTORY_PROXY);row['history']=history_row['history'];row.update(percentile(row));row['history_status']='VGT历史分位采用标普500信息技术行业PE代理；当前PE仍来自先锋官方报告';row['history_proxy']=True
                 else:row=parse_world_pe(r.text,ticker,url)
                 return ticker,row,None
             except Exception:return ticker,None,type(first).__name__
