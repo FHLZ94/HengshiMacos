@@ -116,7 +116,7 @@ def assess_events(news,analyses=None,now=None):
 def trading_environment(model,event_risk,metrics=None,intraday=None):
     metrics=metrics or {};result={}
     for ticker,data in (model or {}).get('targets',{}).items():
-        setup=data['setup'];risk=event_risk[ticker];metric=metrics.get(ticker) or {}
+        setup=data['setup'];risk=event_risk.get(ticker,{'critical_negative':False,'risk_score':0});metric=metrics.get(ticker) or {}
         minute=(intraday or {}).get(ticker) or {}
         stage=market_stage(setup,minute)
         live=metric.get('live_price') or metric.get('price')

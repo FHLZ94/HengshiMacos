@@ -1,6 +1,7 @@
 """Daily QQQ probabilities: purged walk-forward ridge logistic and past-only calibration."""
 from datetime import date, datetime, timezone
 from math import sqrt
+from statistics import mean
 import hashlib
 import json
 from zoneinfo import ZoneInfo
@@ -198,6 +199,11 @@ def analyze_market(histories):
             'up3_pct':round(predictions[3]['probability']*100,1),
             'up5_pct':round(predictions[5]['probability']*100,1),
             'bottom10_pct':round(predictions[10]['probability']*100,1),'setup':setup}
+    spy_history={'ticker':'SPY','bars':[dict(r['spy'],date=r['date']) for r in rows]}
+    targets['SPY']=analyze_single_security(spy_history)
+    security_map={h.get('ticker'):h for h in histories}
+    if security_map.get('ORCL'):
+        targets['ORCL']=analyze_single_security(security_map['ORCL'])
     up,bottom=targets['QQQ']['up5'],targets['QQQ']['bottom10']
     b = rows[-1]['qqq']; previous = rows[-2]['qqq']; day = rows[-1]['date']
     q20 = [r['qqq']['close'] for r in rows[-20:]]
@@ -224,6 +230,57 @@ def analyze_market(histories):
         bottom10_definition='各标的未来10个交易日最低价不低于本日最低价，且第10日收盘高于本日收盘；这是低点守稳事件，不是长期底部保证',
         feature_names=list(FEATURE_NAMES),
         limitations='日线模型每天收盘后更新输入；盘前盘后报价单独刷新。CNN和当前成分广度用于情绪解释，未伪造其历史输入。')
+
+
+def _simple_forecast(outcomes):
+    outcomes=[int(v) for v in outcomes if v is not None]
+    if not outcomes:
+        return {'probability':.5,'method':'样本不足','training_samples':0,'calibration_samples':0,
+                'interval':None,'validation_count':0,'brier':None,'baseline_brier':None,
+                'feature_weights':[],'weights_active':False}
+    split=max(1,len(outcomes)//2);predictions=[];actuals=[]
+    for i in range(split,len(outcomes)):
+        predictions.append((sum(outcomes[:i])+1)/(i+2));actuals.append(outcomes[i])
+    probability=(sum(outcomes)+1)/(len(outcomes)+2)
+    brier=float(np.mean([(p-y)**2 for p,y in zip(predictions,actuals)])) if actuals else None
+    return {'probability':probability,'method':'标的自身历史频率','training_samples':len(outcomes),
+            'calibration_samples':0,'interval':_wilson(sum(outcomes),len(outcomes)),
+            'validation_count':len(actuals),'brier':round(brier,4) if brier is not None else None,
+            'baseline_brier':round(brier,4) if brier is not None else None,
+            'feature_weights':[],'weights_active':False}
+
+
+def analyze_single_security(history):
+    bars=sorted([b for b in history.get('bars',[]) if b.get('close',0)>0],key=lambda b:b['date'])
+    ticker=history.get('ticker','')
+    if len(bars)<150:
+        empty=_simple_forecast([])
+        return {'ticker':ticker,'date':bars[-1]['date'] if bars else None,'up3':empty,'up5':empty,'bottom10':empty,
+                'up3_pct':None,'up5_pct':None,'bottom10_pct':None,'setup':{'label':'历史样本不足','oversold':False,'overbought':False,'lower_tail_pct':50,'upper_tail_pct':50,'rsi14':None}}
+    close=[float(b['close']) for b in bars];lows=[float(b.get('low',b['close'])) for b in bars]
+    up3=[];up5=[];bottom=[]
+    for i in range(63,len(bars)-10,5):
+        up3.append(close[i+3]>close[i]);up5.append(close[i+5]>close[i])
+        bottom.append(min(lows[i+1:i+11])>=lows[i] and close[i+10]>close[i])
+    changes=[b-a for a,b in zip(close,close[1:])];gain=mean(max(v,0) for v in changes[-14:]);loss=mean(max(-v,0) for v in changes[-14:])
+    rsi=100-100/(1+gain/loss) if loss else 100 if gain else 50
+    gaps=[]
+    for i in range(20,len(close)):
+        mean20=mean(close[i-19:i+1]);vol=max(np.std(np.diff(np.log(close[max(0,i-20):i+1]))),.003)
+        gaps.append(np.log(close[i]/mean20)/vol)
+    current_gap=gaps[-1];rank=sum(v<current_gap for v in gaps)/len(gaps)*100
+    setup={'label':'明显超买' if rank>=95 and rsi>60 else '明显超卖' if rank<=5 and rsi<40 else '常态区间',
+           'oversold':bool(rank<=5 and rsi<40),'overbought':bool(rank>=95 and rsi>60),
+           'extreme_oversold':bool(rank<=1 and rsi<35),'extreme_overbought':bool(rank>=99 and rsi>65),
+           'lower_tail_pct':round(rank,1),'upper_tail_pct':round(100-rank,1),'rsi14':round(float(rsi),1),
+           'recovery_confirmed':bool(close[-1]>close[-2]),'return5':round(float(_pct(close[-1],close[-6])),2)}
+    p3=_simple_forecast(up3);p5=_simple_forecast(up5);pb=_simple_forecast(bottom)
+    for prediction in (p3,p5,pb):
+        prediction['feature_weights']=[{'name':name,'coefficient':0.0,'share_pct':0.0} for name in FEATURE_NAMES]
+    return {'ticker':ticker,'date':bars[-1]['date'],'up3':p3,'up5':p5,'bottom10':pb,
+            'up3_pct':round(p3['probability']*100,1),'up5_pct':round(p5['probability']*100,1),
+            'bottom10_pct':round(pb['probability']*100,1),'setup':setup,
+            'training_samples':p5['training_samples'],'history_days':len(bars)}
 
 
 

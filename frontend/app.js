@@ -54,7 +54,7 @@ function renderPulse(){
     $('#pulseHeadline').textContent='正在计算短线交易环境';$('#pulseDate').textContent=model?.reason || '优先读取本地历史';
     $('#pulseGrid').innerHTML=metric('QQQ / SMH','计算中','分别训练、校准与检验');$('#pulseFoot').textContent='正在计算概率、超卖位置与事件风险。';$('#modelMethod').textContent='等待有效历史数据';return;
   }
-  const codes=['QQQ','SMH'],assessment=state.market.assessment || {},cnn=assessment.cnn;
+  const codes=['QQQ','SPY','SMH','ORCL'],assessment=state.market.assessment || {},cnn=assessment.cnn;
   const worst=codes.some(t=>risks[t]?.critical_negative),minute=state.market.intraday || {};
   const hot=codes.some(t=>model.targets[t].setup.overbought),cold=codes.some(t=>model.targets[t].setup.oversold);
   $('#pulseHeadline').textContent=worst?'重大事件风险上升，优先核对敞口':hot && cold?'科技与半导体位置分化，分别核对过热与超卖':hot?'部分指数高位偏热，核对拥挤与追价风险':codes.every(t=>model.targets[t].setup.oversold)?'科技与半导体进入明显超卖区，承接决定能否出手':assessment.headline || '短线情绪与交易环境';

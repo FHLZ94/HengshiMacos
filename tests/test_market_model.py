@@ -19,6 +19,16 @@ class MarketModelTests(unittest.TestCase):
         result=analyze_market(histories)
         self.assertFalse(result['available'])
 
+    def test_market_targets_include_spy_and_orcl_with_own_history_methods(self):
+        values=[100+i*.04+((i%31)-15)*.4 for i in range(800)]
+        histories=[self.make_history(ticker,[value*(1+offset) for value in values])
+                   for ticker,offset in [('QQQ',0),('SPY',.1),('SMH',.3),('^VIX',-.8)]]
+        histories.append(self.make_history('ORCL',[90+i*.03+((i%17)-8)*.6 for i in range(800)]))
+        result=analyze_market(histories)
+        self.assertEqual(set(('QQQ','SPY','SMH','ORCL')),set(result['targets']))
+        self.assertEqual(result['targets']['ORCL']['up5']['method'],'标的自身历史频率')
+        self.assertGreater(result['targets']['SPY']['training_samples'],0)
+
     def test_probability_has_samples_and_chronological_validation(self):
         values=[100+i*.04+((i%31)-15)*.4 for i in range(800)]
         histories=[self.make_history(ticker,[value*(1+offset) for value in values])

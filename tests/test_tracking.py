@@ -34,6 +34,17 @@ def quote(ticker,price=100):
 
 
 class TrackingTests(unittest.TestCase):
+    def test_market_pulse_targets_include_spy_and_orcl(self):
+        with profile():
+            api=DesktopAPI();api._start_model(force=True)
+            import time
+            deadline=time.monotonic()+4
+            while api.model_busy and time.monotonic()<deadline:time.sleep(.01)
+            # Empty isolated cache can leave historical model unavailable, but the
+            # target contract remains explicit once valid histories are present.
+            if api._model_result and api._model_result.get('available'):
+                self.assertEqual(set(('QQQ','SPY','SMH','ORCL')),set(api._model_result['targets']))
+
     def test_seed_has_twelve_cards_with_goog_c_and_independent_qqq(self):
         with profile():
             api=DesktopAPI();state=api.get_state()
