@@ -28,6 +28,8 @@ CNN_HEADERS = {
 }
 SP500_LIST = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets' / 'sp500_constituents.csv'
 NETWORK_LIMIT = threading.BoundedSemaphore(6)
+SECTOR_TICKERS = ('XLK','SMH','XLV','XLP','XLU','XLY','XLF','XLE','XLI','XLC','XLRE','XLB','TLT','GLD')
+ETF_TICKERS = frozenset(('QQQ','QQQM','SPY','IWM','RSP',*SECTOR_TICKERS))
 
 
 def http_get(*args, **kwargs):
@@ -263,7 +265,7 @@ def _quote(ticker, config):
         row = {'ticker': ticker, 'name': data.get('companyName', ticker), 'exchange': data.get('exchange', ''),
                'price': price, 'change': change, 'asof': primary.get('lastTradeTimestamp',''),
                'fetched_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'source': 'Nasdaq',
-               'market_status':data.get('marketStatus',''),'is_realtime':bool(primary.get('isRealTime')),
+               'market_status':data.get('marketStatus',''),'session':'regular','is_realtime':bool(primary.get('isRealTime')),
                'price_label':'最近成交' if primary.get('isRealTime') else '延迟最近成交'}
         try:
             summary_url=f'https://api.nasdaq.com/api/quote/{quote(ticker)}/summary?assetclass={kind}'
@@ -312,7 +314,13 @@ def fetch_quotes(watchlist, config):
                 rows.append(row)
             health.append(state)
     order = {ticker: i for i, ticker in enumerate(watchlist)}
-    return sorted(rows, key=lambda row: order[row['ticker']]), sorted(health, key=lambda x:order[x['source']])
+    extended, extra_health = fetch_session_quotes(watchlist, config)
+    base = {r['ticker']:r for r in rows}
+    for item in extended:
+        merged = merge_session_quote(base.get(item['ticker']), item)
+        if merged: base[item['ticker']] = merged
+    health.append(extra_health)
+    return sorted(base.values(), key=lambda row: order[row['ticker']]), health
 
 
 def _estimate(ticker, config):
@@ -382,7 +390,7 @@ def _history(ticker, config):
             response=http_get('https://fred.stlouisfed.org/graph/fredgraph.csv?id=VIXCLS',
                                   timeout=(5,18),headers=HEADERS,proxies=configured_proxy(config))
             response.raise_for_status()
-            start=(datetime.now(timezone.utc)-timedelta(days=1450)).date().isoformat()
+            start=(datetime.now(timezone.utc)-timedelta(days=3700)).date().isoformat()
             bars=[{'date':item.get('observation_date') or item.get('DATE'),
                    'close':float(item['VIXCLS'])}
                   for item in csv.DictReader(StringIO(response.text))
@@ -396,15 +404,15 @@ def _history(ticker, config):
                          'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
     if ticker=='DRAM' or ticker.startswith('^'):
         return None,{'source':'历史 '+ticker,'status':'unsupported','reason':'不支持此代码'}
-    kind='etf' if ticker in ('SMH','QQQM','QQQ','SPY','IWM','RSP','XLF','XLE','XLI','XLY') else 'stocks'
+    kind='etf' if ticker in ETF_TICKERS else 'stocks'
     now=datetime.now(timezone.utc)
-    market=ticker in ('QQQ','SMH','SPY')
-    start=(now-timedelta(days=1450 if market else 190)).date().isoformat()
+    long_history=ticker in ('QQQ','SPY','SMH') or (ticker not in SECTOR_TICKERS and ticker not in ('IWM','RSP'))
+    start=(now-timedelta(days=3700 if long_history else 190)).date().isoformat()
     end=now.date().isoformat()
-    url=f'https://api.nasdaq.com/api/quote/{quote(ticker)}/historical?assetclass={kind}&fromdate={start}&todate={end}&limit={1100 if market else 140}'
+    url=f'https://api.nasdaq.com/api/quote/{quote(ticker)}/historical?assetclass={kind}&fromdate={start}&todate={end}&limit={2700 if long_history else 140}'
     try:
         response=http_get(url,headers=QUOTE_HEADERS,timeout=(5,15),
-                              proxies=configured_proxy(config,for_google=True))
+                              proxies=configured_proxy(config))
         response.raise_for_status()
         data=response.json().get('data') or {}
         raw=((data.get('tradesTable') or {}).get('rows') or [])
@@ -430,6 +438,7 @@ def _history(ticker, config):
 
 
 def fetch_histories(watchlist, config):
+    watchlist=list(dict.fromkeys(watchlist))
     rows,health=[],[]
     with ThreadPoolExecutor(max_workers=4) as pool:
         futures=[pool.submit(_history,ticker,config) for ticker in watchlist]
@@ -447,7 +456,7 @@ def reconcile_closed_quotes(quotes, histories):
     for quote_row in quotes:
         updated=dict(quote_row)
         bars=history_map.get(updated['ticker'],[])
-        if updated.get('market_status')=='Closed' and len(bars)>=2:
+        if updated.get('market_status')=='Closed' and updated.get('session') not in ('pre','post') and len(bars)>=2:
             try:
                 quote_date=datetime.strptime(updated['asof'],'%b %d, %Y').date().isoformat()
             except (TypeError,ValueError):
@@ -553,3 +562,74 @@ def fetch_sp500_breadth(config):
     except (OSError,requests.RequestException,ValueError,TypeError,KeyError) as exc:
         return None,{'source':source,'status':'error','reason':type(exc).__name__,
                      'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds')}
+
+
+def _quote_date(value):
+    value = value or ''
+    match=re.search(r'[A-Za-z]{3}\s+\d{1,2},\s*\d{4}',value)
+    if match:
+        try:return datetime.strptime(match.group(),'%b %d, %Y').date()
+        except ValueError:pass
+    for fmt in ('%Y-%m-%d','%b %d, %Y','%m/%d/%y'):
+        try:return datetime.strptime(value[:10] if fmt!='%b %d, %Y' else value,fmt).date()
+        except ValueError:pass
+    return None
+
+
+def merge_session_quote(regular,item):
+    """Compare observation dates, never retrieval times, before replacing."""
+    if not regular:return item
+    old_day = _quote_date(regular.get('asof')); new_day = _quote_date(item.get('asof'))
+    if not new_day or (old_day and new_day<old_day):return regular
+    if new_day==old_day and item.get('session')=='pre' and regular.get('market_status') in ('Open','Closed'):return regular
+    if new_day==old_day and item.get('session')=='post' and regular.get('market_status')=='Open':return regular
+    if new_day==old_day and item.get('session')=='regular':return regular
+    return {**regular,**item}
+
+
+def parse_session_quotes(entries,watchlist,checked):
+    if isinstance(entries,dict):entries=[entries]
+    rows=[]
+    for entry in entries:
+        ticker=entry.get('symbol')
+        if ticker not in watchlist:continue
+        try:
+            regular=float(entry['last']);prior=float(entry['previous_day_closing'])
+            day=_quote_date(entry.get('last_timedate','').split(' ')[0])
+            if regular<=0 or not day:continue
+            ext=entry.get('ExtendedMktQuote') or {}
+            ext_day=_quote_date(ext.get('last_time')) or _quote_date(ext.get('last_timedate','').split(' ')[0])
+            ext_type=ext.get('type');status=entry.get('curmktstatus')
+            use_ext=(ext_day and ext_day>=day and ext_type in ('POST_MKT','PRE_MKT')
+                     and status in ('POST_MKT','PRE_MKT','CLOSED') and float(ext.get('last') or 0)>0)
+            price=float(ext['last']) if use_ext else regular
+            session=('post' if ext_type=='POST_MKT' else 'pre') if use_ext else 'regular'
+            label=('盘后成交' if session=='post' else '盘前成交' if session=='pre'
+                   else '盘中成交' if status=='REG_MKT' else '最近收盘')
+            rows.append(dict(ticker=ticker,price=price,change=round((price/prior-1)*100,4) if prior>0 else 0,
+                asof=(ext_day if use_ext else day).isoformat(),fetched_at=checked,
+                source='CNBC · Nasdaq 延长时段' if use_ext else 'CNBC 报价',
+                session=session,price_label=label,is_realtime=False,regular_close=regular,
+                regular_asof=day.isoformat(),session_change_pct=round((price/regular-1)*100,4) if use_ext else None,
+                market_status='Open' if status=='REG_MKT' else 'Closed',
+                timestamp_precision='date',currency='USD'))
+        except (ValueError,TypeError,KeyError):continue
+    return rows
+
+
+def fetch_session_quotes(watchlist,config):
+    symbols=[t for t in watchlist if not t.startswith('^') and t!='DRAM']
+    checked=datetime.now(timezone.utc).isoformat(timespec='seconds')
+    if not symbols:return [],dict(source='盘前盘后行情',status='unsupported',checked_at=checked)
+    try:
+        response=http_get('https://quote.cnbc.com/quote-html-webservice/quote.htm',
+            params={'symbols':'|'.join(symbols),'requestMethod':'itv','noform':'1','partnerId':'2',
+                    'fund':'1','exthrs':'1','output':'json'},headers=HEADERS,
+            proxies=configured_proxy(config),timeout=(4,9))
+        response.raise_for_status()
+        entries=(response.json().get('ITVQuoteResult') or {}).get('ITVQuote') or []
+        rows=parse_session_quotes(entries,symbols,checked)
+        if not rows:raise ValueError('无有效分时段报价')
+        return rows,dict(source='盘前盘后行情',status='ok',count=len(rows),checked_at=checked)
+    except (requests.RequestException,ValueError,TypeError,KeyError) as exc:
+        return [],dict(source='盘前盘后行情',status='error',reason=type(exc).__name__,checked_at=checked)

@@ -56,7 +56,12 @@ def compose(model,cnn,breadth,now=None):
         decision='结合持仓估值和新事件，逐项核对关注区、确认价与风险价'
     validated=bool(model.get('validated_better_than_baseline') and model.get('samples',0)>=40
                    and model.get('validation_count',0)>=40)
-    risk=('历史相似模型未优于滚动基线，不能把发生率当成可用预测概率'
-          if not validated else '历史模型通过当前基线检验，但市场结构可能变化')
+    if model.get('model_version'):
+        validated=model.get('up5',{}).get('method')=='校准多因子'
+        risk=('当前五日参考采用历史基准收缩，多因子暂未提供稳定的额外预测能力'
+              if not validated else '五日参考使用多因子校准；历史表现不能保证未来，需结合触发与失效条件')
+    else:
+        risk=('历史相似模型未优于滚动基线，不能把发生率当成可用预测概率'
+              if not validated else '历史模型通过当前基线检验，但市场结构可能变化')
     return {'headline':headline,'decision':decision,'evidence':evidence,
             'risk':risk,'validated':validated,'cnn':cnn,'breadth':breadth}

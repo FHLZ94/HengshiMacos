@@ -1,5 +1,5 @@
 """WebView desktop shell backed by local data and research services."""
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import copy
@@ -17,6 +17,9 @@ import data_service
 import main
 import market_model
 import market_view
+import fund_valuation
+import sector_rotation
+from investment_reference import annual_reference
 import valuation
 import event_intelligence
 from signals import analyze_history, flow_proxy, scenario
@@ -26,6 +29,7 @@ APP_NAME = '衡势'
 ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'frontend'
 LOCAL_TZ = timezone(timedelta(hours=8))
 MARKET_SAMPLE=('IWM','RSP','XLF','XLE','XLI','XLY')
+HISTORY_EXTRA=tuple(dict.fromkeys((*MARKET_SAMPLE,*data_service.SECTOR_TICKERS)))
 
 
 def local_time(value):
@@ -118,8 +122,9 @@ def current_price_gap(quote,comparison):
         gap_seconds=abs((datetime.fromisoformat(quote['fetched_at'])-
                          datetime.fromisoformat(comparison['fetched_at'])).total_seconds())
         if gap_seconds>86400:return None
-        if not isinstance(comparison.get('price'),(int,float)) or quote['price']<=0:return None
-        return (comparison['price']/quote['price']-1)*100
+        price=quote.get('regular_close') if quote.get('session') in ('pre','post') else quote['price']
+        if not isinstance(comparison.get('price'),(int,float)) or not price or price<=0:return None
+        return (comparison['price']/price-1)*100
     except (ValueError,TypeError,KeyError,ZeroDivisionError):
         return None
 
@@ -145,7 +150,7 @@ class DesktopAPI:
         self.translation=TranslationStore(main.APP_DIR/'translations.sqlite3')
         self.news,self.quotes,self.health=main.load_snapshot(self.settings['watchlist'])
         self.estimates=main.load_estimates(self.settings['watchlist'])
-        self.histories=main.load_histories(self.settings['watchlist']+list(MARKET_SAMPLE))
+        self.histories=main.load_histories(self.settings['watchlist']+list(HISTORY_EXTRA))
         self.positions=main.load_positions()
         self.holding_flags=main.load_holding_flags()
         self.neutral=main.load_neutral_multiples()
@@ -153,9 +158,15 @@ class DesktopAPI:
         self.comparisons=main.load_comparisons(self.settings['watchlist'])
         self.fear_greed=main.load_market_extra('cnn_fear_greed')
         self.sp500_breadth=main.load_market_extra('sp500_breadth')
-        self._model_key=None
-        self._model_result=None
+        self.fund_valuations=main.load_market_extra('fund_valuations') or {}
+        cached_model=main.load_market_extra('market_model_v2') or {}
+        self._model_key=cached_model.get('input_key')
+        self._model_result=cached_model if cached_model.get('model_version')==market_model.MODEL_VERSION else None
+        self.model_busy=False
+        self.model_pending=False
+        self._annual_cache={}
         self.busy=False
+        self.quote_busy=False
         self.search_busy=False
         self.search_status=''
         self.search_result_count=0
@@ -173,64 +184,129 @@ class DesktopAPI:
         threading.Thread(target=self._scheduler,daemon=True).start()
 
     def _scheduler(self):
+        last_full=time.monotonic()
         while True:
+            time.sleep(60)
             with self.lock:
                 seconds=max(120,int(self.settings.get('refresh_seconds',300)))
-            time.sleep(seconds)
-            self.refresh()
+            if time.monotonic()-last_full>=seconds:
+                self.refresh();last_full=time.monotonic()
+            else:self._refresh_session_async()
+
+    def _refresh_session_async(self):
+        with self.lock:
+            if self.quote_busy or self.busy:return
+            self.quote_busy=True;config=copy.deepcopy(self.settings)
+        def work():
+            try:
+                rows,health=data_service.fetch_session_quotes(config['watchlist'],config)
+                if rows:
+                    main.save_snapshot(rows,[health])
+                    with self.lock:
+                        self.quotes=main.load_snapshot(config['watchlist'])[1]
+                        self.last_sync=datetime.now(LOCAL_TZ).strftime('%m-%d %H:%M:%S')
+                        self.revision+=1
+            except Exception:logging.exception('Session quote refresh failed')
+            finally:
+                with self.lock:self.quote_busy=False
+        threading.Thread(target=work,daemon=True).start()
 
     def refresh(self):
+        self._start_model(force=True)
         with self.lock:
-            if self.busy:return {'ok':True,'message':'同步正在进行'}
-            self.busy=True;self.status='正在同步新闻、行情与预期';self.revision+=1
+            if self.busy:return {'ok':True,'message':'已重新计算本地行情，网络同步正在进行'}
+            self.busy=True;self.status='正在更新行情与研判';self.revision+=1
             config=copy.deepcopy(self.settings)
         threading.Thread(target=self._refresh_worker,args=(config,),daemon=True).start()
-        return {'ok':True,'message':'已开始同步'}
+        return {'ok':True,'message':'已重新计算本地行情，并开始同步新数据'}
+
+    def _start_model(self,force=False):
+        with self.lock:
+            if self.model_busy:
+                self.model_pending=True
+                return
+            histories=copy.deepcopy(self.histories)
+            key=market_model.history_key(histories)
+            if not force and key==self._model_key:return
+            self.model_busy=True;self.revision+=1
+        def work():
+            try:
+                result=market_model.analyze_market(histories)
+                result['input_key']=key
+                main.save_market_extra('market_model_v2',result)
+                with self.lock:
+                    self._model_result=result;self._model_key=key
+            except Exception:
+                logging.exception('Market model failed')
+                with self.lock:
+                    if not self._model_result:self._model_result={'available':False,'reason':'本地历史校验失败，等待补充有效行情'}
+            finally:
+                with self.lock:
+                    self.model_busy=False;pending=self.model_pending;self.model_pending=False;self.revision+=1
+                if pending:self._start_model()
+        threading.Thread(target=work,daemon=True).start()
 
     def _refresh_worker(self,config):
+        health=[]
         try:
-            with ThreadPoolExecutor(max_workers=7) as pool:
-                nf=pool.submit(main.fetch_news,config['watchlist'],config)
-                qf=pool.submit(main.fetch_quotes,config['watchlist'],config)
-                ef=pool.submit(data_service.fetch_estimates,config['watchlist'],config)
-                hf=pool.submit(data_service.fetch_histories,config['watchlist']+list(MARKET_SAMPLE),config)
-                cf=pool.submit(data_service.fetch_comparison,config['watchlist'],config)
-                with self.lock:
-                    cached_cnn=self.fear_greed
-                    cached_breadth=self.sp500_breadth
-                def should_fetch(item,seconds):
-                    try:return (datetime.now(timezone.utc)-datetime.fromisoformat(item['fetched_at'])).total_seconds()>seconds
-                    except (KeyError,TypeError,ValueError):return True
-                cnn_future=pool.submit(data_service.fetch_cnn_fear_greed,config) if should_fetch(cached_cnn,1200) else None
-                breadth_future=pool.submit(data_service.fetch_sp500_breadth,config) if should_fetch(cached_breadth,1800) else None
-                news,nh=nf.result();quotes,qh=qf.result();estimates,eh=ef.result();histories,hh=hf.result()
-                comparisons,ch=cf.result()
-                cnn,cnn_health=cnn_future.result() if cnn_future else (cached_cnn,None)
-                breadth,breadth_health=breadth_future.result() if breadth_future else (cached_breadth,None)
-            quotes=data_service.reconcile_closed_quotes(quotes,histories)
-            health=nh+qh+eh+hh+[ch]+[row for row in (cnn_health,breadth_health) if row]
-            main.save_snapshot(quotes,health,estimates,histories,comparisons)
-            if cnn:main.save_market_extra('cnn_fear_greed',cnn)
-            if breadth:main.save_market_extra('sp500_breadth',breadth)
+            # Apply each completed group immediately. Slow or blocked RSS cannot
+            # hold back quotes, historical inputs or an offline model recalculation.
+            with ThreadPoolExecutor(max_workers=9) as pool:
+                jobs={pool.submit(data_service.fetch_session_quotes,config['watchlist'],config):'sessions',
+                      pool.submit(main.fetch_quotes,config['watchlist'],config):'quotes',
+                      pool.submit(data_service.fetch_histories,config['watchlist']+list(HISTORY_EXTRA),config):'histories',
+                      pool.submit(data_service.fetch_estimates,config['watchlist'],config):'estimates',
+                      pool.submit(fund_valuation.fetch_fund_valuations,config):'funds',
+                      pool.submit(data_service.fetch_comparison,config['watchlist'],config):'comparisons',
+                      pool.submit(data_service.fetch_cnn_fear_greed,config):'cnn',
+                      pool.submit(data_service.fetch_sp500_breadth,config):'breadth',
+                      pool.submit(main.fetch_news,config['watchlist'],config):'news'}
+                for future in as_completed(jobs):
+                    kind=jobs[future]
+                    try:
+                        rows,states=future.result()
+                        states=states if isinstance(states,list) else [states]
+                        states=[row for row in states if row]
+                        health.extend(states)
+                        if kind in ('quotes','sessions','histories','estimates','comparisons'):
+                            kwargs={'quotes' if kind=='sessions' else kind:rows}
+                            if kind in ('quotes','sessions'):
+                                with self.lock:existing=copy.deepcopy(self.histories)
+                                kwargs['quotes']=data_service.reconcile_closed_quotes(rows,existing)
+                            main.save_snapshot(kwargs.pop('quotes',[]),states,**kwargs)
+                            with self.lock:
+                                if kind in ('quotes','sessions'):self.quotes=main.load_snapshot(config['watchlist'])[1]
+                                elif kind=='histories':self.histories=main.load_histories(config['watchlist']+list(HISTORY_EXTRA))
+                                elif kind=='estimates':self.estimates=main.load_estimates(config['watchlist'])
+                                else:self.comparisons=main.load_comparisons(config['watchlist'])
+                                self.status='行情已更新，其他信息继续同步' if kind in ('quotes','sessions') and rows else '正在同步，已有数据可继续使用'
+                                self.revision+=1
+                            if kind=='histories':self._start_model()
+                        elif kind=='news' and rows:
+                            with self.lock:self.news=merge_news(self.news,rows);self.revision+=1
+                            self._start_translation();self._start_priority_analysis()
+                        elif kind in ('cnn','breadth','funds') and rows:
+                            name={'cnn':'cnn_fear_greed','breadth':'sp500_breadth','funds':'fund_valuations'}[kind]
+                            if kind=='funds':
+                                with self.lock:rows={**self.fund_valuations,**rows}
+                            main.save_market_extra(name,rows)
+                            with self.lock:
+                                if kind=='cnn':self.fear_greed=rows
+                                elif kind=='breadth':self.sp500_breadth=rows
+                                else:self.fund_valuations=rows
+                                self.revision+=1
+                    except Exception:
+                        logging.exception('Refresh group failed: %s',kind)
             with self.lock:
-                if news:self.news=merge_news(self.news,news)
-                self.quotes=main.load_snapshot(self.settings['watchlist'])[1]
-                if health:self.health=health
-                if estimates:self.estimates=main.load_estimates(self.settings['watchlist'])
-                if histories:self.histories=main.load_histories(self.settings['watchlist']+list(MARKET_SAMPLE))
-                if comparisons:self.comparisons=main.load_comparisons(self.settings['watchlist'])
-                if cnn:self.fear_greed=cnn
-                if breadth:self.sp500_breadth=breadth
+                self.health=health or self.health
                 ok=sum(item['status']=='ok' for item in health)
-                self.status=f'已同步 {ok}/{len(health)} 个来源'
-                self.last_sync=datetime.now(LOCAL_TZ).strftime('%m-%d %H:%M')
-                self.busy=False;self.revision+=1
-            if news:self._start_translation()
-            if news:self._start_priority_analysis()
+                self.status='同步完成，研判已更新' if ok else '网络未连接，已使用本地历史重算'
+                self.last_sync=datetime.now(LOCAL_TZ).strftime('%m-%d %H:%M:%S')
         except Exception:
             logging.exception('Desktop refresh failed')
-            with self.lock:
-                self.status='同步失败，正在显示本地历史';self.busy=False;self.revision+=1
+            with self.lock:self.status='网络同步失败，本地研判可继续使用'
+        finally:
+            with self.lock:self.busy=False;self.revision+=1
 
     def _start_translation(self):
         with self.lock:
@@ -360,6 +436,9 @@ class DesktopAPI:
             comparisons=copy.deepcopy(self.comparisons)
             cnn=copy.deepcopy(self.fear_greed)
             breadth=copy.deepcopy(self.sp500_breadth)
+            fund_values=copy.deepcopy(self.fund_valuations)
+            model_result=copy.deepcopy(self._model_result)
+            model_busy=self.model_busy
             health=copy.deepcopy(self.health);watchlist=list(self.settings['watchlist'])
             status=self.status;revision=self.revision;busy=self.busy;last_sync=self.last_sync
             search_busy=self.search_busy;search_status=self.search_status;search_result_count=self.search_result_count
@@ -423,6 +502,9 @@ class DesktopAPI:
                 'price_label':q.get('price_label','最近可得价格') if q else '报价缺失',
                 'market_status':q.get('market_status') if q else None,
                 'is_realtime':q.get('is_realtime',False) if q else False,
+                'regular_close':q.get('regular_close') if q else None,
+                'session_change_pct':q.get('session_change_pct') if q else None,
+                'fund_valuation':fund_values.get(ticker),
                 'eps_ntm':eps,'eps_period':chinese_period(e.get('period','')) if e else '',
                 'eps_source':'纳斯达克分析师季度一致预期' if e else '',
                 'eps_asof':local_time(e.get('fetched_at')) if e else '',
@@ -449,9 +531,20 @@ class DesktopAPI:
             gap=current_price_gap(q,comparison)
             average=one_year.get(ticker,{}).get('average')
             fair=valuation.calculate(q,e,comparison,neutral.get(ticker),management.get(ticker),average)['fair_price']
-            advice=scenario(metric,ticker in held,recent_negative(news,ticker),fair,
+            action_metric={**metric,'price':q['price']} if metric and q else metric
+            advice=scenario(action_metric,ticker in held,recent_negative(news,ticker),fair,
                             q.get('target_price') if q else None,data_conflict=gap is not None and abs(gap)>2.5)
+            annual_key=(ticker,history_map.get(ticker,{}).get('fetched_at'),q.get('price') if q else None,fair,q.get('target_price') if q else None)
+            if annual_key not in self._annual_cache:
+                self._annual_cache[annual_key]=annual_reference(history_map.get(ticker),q.get('price') if q else None,advice.get('watch_zone'),fair,q.get('target_price') if q else None)
+                if len(self._annual_cache)>200:self._annual_cache={annual_key:self._annual_cache[annual_key]}
             actions.append({'ticker':ticker,'held':ticker in held,'metric':metric,
+                            'current_price':q['price'] if q else None,
+                            'price_label':q.get('price_label','最近报价') if q else '报价待获取',
+                            'quote_asof':trade_date(q.get('asof')) if q else '',
+                            'regular_close':q.get('regular_close') if q else None,
+                            'session_change_pct':q.get('session_change_pct') if q else None,
+                            'annual':self._annual_cache[annual_key],
                             'flow':flow_proxy(metric),'advice':advice})
         portfolio=[]
         for position in positions:
@@ -459,23 +552,16 @@ class DesktopAPI:
             portfolio.append({**position,'price':q['price'] if q else None,'value':value,
                               'profit':value-position['quantity']*position['cost'] if value is not None else None})
         market=main.market_regime(quotes,news)
-        model_key=tuple((row['ticker'],row.get('fetched_at')) for row in histories)
-        if model_key!=self._model_key:
-            try:
-                self._model_result=market_model.analyze_market(histories)
-            except Exception:
-                logging.exception('Market model failed')
-                self._model_result={'available':False,'reason':'历史行情校验失败'}
-            self._model_key=model_key
         series={ticker:history_map[ticker]['bars'][-30:] for ticker in ('QQQ','SMH','SPY') if ticker in history_map}
-        market_assessment=market_view.compose(self._model_result,cnn,breadth)
+        market_assessment=market_view.compose(model_result,cnn,breadth)
         return {'revision':revision,'status':status,'busy':busy,'last_sync':last_sync,
                 'search_busy':search_busy,'search_status':search_status,'search_result_count':search_result_count,
                 'search_query':search_query,
                 'news':public_news,'watch':watch,'portfolio':portfolio,'actions':actions,
                 'market':{'label':market['label'],'score':market['score'],'up':market['up'],'down':market['down'],
                           'vix':quote_map.get('^VIX'),'qqq':metrics.get('QQQ'),'smh':metrics.get('SMH'),
-                          'spy':metrics.get('SPY'),'series':series,'model':self._model_result,
+                          'spy':metrics.get('SPY'),'series':series,'model':model_result,'model_busy':model_busy,
+                          'rotation':{'5':sector_rotation.rotation(histories,5),'20':sector_rotation.rotation(histories,20)},
                           'assessment':market_assessment},
                 'health':[{'source':source_name(h['source']),'status':'正常' if h['status']=='ok' else health_reason(h.get('reason') or h['status']),
                            'count':h.get('count'),'checked':local_time(h.get('checked_at'))} for h in health],
@@ -638,7 +724,7 @@ def main_entry():
     def diagnose():
         time.sleep(3)
         logging.info('WebView state %s',window.evaluate_js("JSON.stringify({bridge:!!window.pywebview,api:!!window.pywebview?.api,boot:typeof boot,scripts:document.scripts.length})"))
-        logging.info('Frontend DOM %s',window.evaluate_js("JSON.stringify({metrics:document.getElementById('eventMetrics').innerHTML.length,status:document.getElementById('sourceStatus').textContent,toast:document.getElementById('toast').textContent})"))
+        logging.info('Frontend DOM %s',window.evaluate_js("JSON.stringify({metrics:document.getElementById('pulseGrid').innerHTML.length,status:document.getElementById('sourceStatus').textContent,toast:document.getElementById('toast').textContent})"))
         window.evaluate_js("window.__probe='pending';window.pywebview.api.get_state().then(s=>{window.__probe='news:'+s.news.length;try{state=s;render();window.__probe+=' rendered'}catch(e){window.__probe=e.stack}}).catch(e=>window.__probe='bridge:'+e);")
         time.sleep(3)
         logging.info('Frontend probe %s',window.evaluate_js('window.__probe'))

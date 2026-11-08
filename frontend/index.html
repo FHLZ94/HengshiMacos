@@ -21,7 +21,7 @@
       </div>
     </div>
     <nav class="section-nav wrap" aria-label="板块导航">
-      <a href="#events">全球事件</a><a href="#market">情绪与资金流</a><a href="#decisions">交易参考</a><a href="#portfolio">组合与估值</a>
+      <a href="#marketPulse" class="active"><i data-lucide="gauge"></i><span>市场研判</span></a><a href="#events"><i data-lucide="radio-tower"></i><span>全球情报</span></a><a href="#market"><i data-lucide="chart-no-axes-combined"></i><span>板块资金偏好</span></a><a href="#decisions"><i data-lucide="crosshair"></i><span>交易参考</span></a><a href="#portfolio"><i data-lucide="briefcase-business"></i><span>组合与估值</span></a>
     </nav>
   </header>
 
@@ -29,7 +29,7 @@
     <section class="pulse-band" id="marketPulse" aria-label="市场总览">
       <div class="pulse-head"><div><span class="section-index">市场即时研判</span><h1 id="pulseHeadline">正在计算市场状态</h1></div><div class="pulse-date" id="pulseDate">等待历史行情</div></div>
       <div class="pulse-grid" id="pulseGrid"></div>
-      <div class="pulse-foot" id="pulseFoot"></div>
+      <div class="pulse-foot" id="pulseFoot"></div><details class="model-method"><summary>概率口径与历史检验</summary><div id="modelMethod"></div></details>
     </section>
     <section class="section" id="events">
       <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="radio-tower"></i></span><div><span class="section-index">01 / 全球事件</span><h1>全球金融情报</h1></div></div><div class="section-aside">政策 · 公告 · 半导体龙头 · AI 算力<span id="translationStatus"></span></div></div>
@@ -51,13 +51,12 @@
     </section>
 
     <section class="section" id="market">
-      <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="activity"></i></span><div><span class="section-index">02 / 市场状态</span><h2>情绪、资金流与短期趋势</h2></div></div><div class="section-aside">最近可得交易日 · 量价代理</div></div>
-      <div class="metric-grid" id="marketMetrics"></div>
-      <div class="market-grid">
-        <div class="chart-panel"><div class="panel-heading"><div><strong>主要 ETF 近 30 个交易日</strong><span>收盘价标准化至起点 100</span></div><div class="legend"><span class="legend-dot qqq"></span>QQQ <span class="legend-dot smh"></span>SMH <span class="legend-dot spy"></span>SPY</div></div><div class="chart-wrap"><canvas id="trendChart"></canvas></div></div>
-        <div class="flow-panel"><div class="panel-heading"><div><strong>买卖盘代理观察</strong><span>价格反应 × 成交量</span></div></div><div id="flowSignals"></div><p class="method-note">免费公开数据无法识别真实机构净买入额。此处只表示量价证据。</p></div>
-      </div>
-      <div class="table-scroll"><table class="data-table" id="trendTable"><thead><tr><th>标的</th><th>趋势</th><th>近 5 日</th><th>5 日均线</th><th>20 日均线</th><th>量比</th><th>行情日期</th></tr></thead><tbody></tbody></table></div>
+      <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="activity"></i></span><div><span class="section-index">02 / 市场状态</span><h2>资金偏好与板块轮动</h2></div></div><div class="section-aside">最近可得交易日 · 量价代理</div></div>
+      <div class="rotation-toolbar"><p>观察成交更倾向承接还是卖压，同时核对相对大盘强弱</p><div class="segmented-control" id="rotationPeriod"><button type="button" data-period="5" class="active">近一周</button><button type="button" data-period="20">近一个月</button></div></div>
+      <div class="market-grid rotation-grid">
+        <div class="chart-panel"><div class="panel-heading"><div><strong>板块承接与卖压</strong><span id="rotationDate">正在读取板块行情</span></div><div class="rotation-legend"><b class="positive">承接</b><b class="negative">卖压</b></div></div><div class="rotation-chart-wrap"><canvas id="rotationChart"></canvas></div></div>
+        <div class="flow-panel rotation-insight" id="rotationInsight"></div>
+      </div><p class="method-note">量价资金偏好代理：使用每日收盘位置、成交量和相对标普强弱。该指标不等于真实净流入金额，也不能识别机构身份。</p>
     </section>
 
     <section class="section" id="decisions">
@@ -71,7 +70,7 @@
       <div class="section-title"><div class="title-with-icon"><span class="title-icon"><i data-lucide="briefcase-business"></i></span><div><span class="section-index">04 / 个人组合</span><h2>持仓与未来 12 个月估值</h2></div></div><div class="section-actions"><button class="quiet-button" id="editWatchlist"><i data-lucide="list-filter"></i> 编辑观察列表</button><button class="primary-button" id="addPosition"><i data-lucide="plus"></i> 录入持仓</button></div></div>
       <div class="portfolio-summary" id="portfolioSummary"></div>
       <div class="subsection-heading"><h3>宽基与行业基金</h3><span>行情、短期趋势与估值口径</span></div>
-      <div class="table-scroll"><table class="data-table fund-table" id="fundTable"><thead><tr><th>标的</th><th>最近报价</th><th>日涨跌</th><th>近 5 日</th><th>20 日趋势</th><th>20 日量比</th><th>前瞻市盈率</th><th>数据日期</th></tr></thead><tbody></tbody></table></div>
+      <div class="table-scroll"><table class="data-table fund-table" id="fundTable"><thead><tr><th>标的</th><th>最近报价</th><th>日涨跌</th><th>近 5 日</th><th>20 日趋势</th><th>当前市盈率（PE）</th><th>估值历史分位</th><th>数据日期</th></tr></thead><tbody></tbody></table></div>
       <div class="subsection-heading"><h3>个股未来估值</h3><span>按合理价相对现价的空间从高到低排序 · 缺数据的标的排在末尾</span></div>
       <div class="table-scroll"><table class="data-table portfolio-table" id="watchTable"><thead><tr><th>标的</th><th>最近报价</th><th>日涨跌</th><th>未来四季每股盈利</th><th>估值倍数</th><th>合理价参考</th><th>相对空间</th><th>分析师一年目标价</th><th>报价时间</th></tr></thead><tbody></tbody></table></div>
       <div class="valuation-detail" id="valuationDetail"><div class="empty-detail">选择标的查看估值依据与相关要闻</div></div>

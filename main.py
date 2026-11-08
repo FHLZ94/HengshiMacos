@@ -14,7 +14,7 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=str(APP_DIR / 'application.log'), level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s', encoding='utf-8')
 DB = APP_DIR / 'events.sqlite3'
-APP_VERSION = '0.5.0'
+APP_VERSION = '0.6.0'
 CONFIG = APP_DIR / 'settings.json'
 ICON = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'nexus.ico'
 DEFAULT_WATCHLIST = ['QQQ','SPY','QQQM','SMH','ORCL','MRVL','MU','LITE','INTC','AVGO','^VIX']
@@ -113,6 +113,17 @@ def save_events(rows):
 def save_snapshot(quotes, health, estimates=(), histories=(), comparisons=()):
     with sqlite3.connect(DB) as con:
         for row in quotes:
+            previous=con.execute('SELECT payload FROM quote_cache WHERE ticker=?',(row['ticker'],)).fetchone()
+            if previous:
+                old=json.loads(previous[0])
+                old_day=data_service._quote_date(old.get('asof'))
+                new_day=data_service._quote_date(row.get('asof'))
+                if old_day and new_day and old_day>new_day:continue
+                # A temporary extended-session outage must not roll the screen
+                # backwards from a known later trade to the same day's close.
+                if old_day==new_day and old.get('session')=='post' and row.get('session') not in ('post',) and row.get('market_status')!='Open':
+                    row={**row,**old}
+                else:row={**old,**row}
             con.execute('INSERT OR REPLACE INTO quote_cache VALUES (?,?,?)',
                         (row['ticker'], json.dumps(row, ensure_ascii=False), row['fetched_at']))
         for row in health:
@@ -128,6 +139,12 @@ def save_snapshot(quotes, health, estimates=(), histories=(), comparisons=()):
                             (row['ticker'],datetime.now(timezone.utc).date().isoformat(),
                              q['price'],row['eps'],q['price']/row['eps'],row['period']))
         for row in histories:
+            previous=con.execute('SELECT payload FROM history_cache WHERE ticker=?',(row['ticker'],)).fetchone()
+            if previous:
+                old=json.loads(previous[0])
+                bars={b['date']:b for b in old.get('bars',[])}
+                bars.update({b['date']:b for b in row.get('bars',[])})
+                row={**row,'bars':sorted(bars.values(),key=lambda b:b['date'])}
             con.execute('INSERT OR REPLACE INTO history_cache VALUES (?,?,?)',
                         (row['ticker'],json.dumps(row,ensure_ascii=False),row['fetched_at']))
         for row in comparisons:

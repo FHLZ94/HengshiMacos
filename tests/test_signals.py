@@ -38,6 +38,18 @@ class SignalTests(unittest.TestCase):
         self.assertEqual(advice['buy_trigger'],108.0)
         self.assertLess(advice['risk_price'],metric['support20'])
 
+    def test_after_hours_quote_is_not_a_daily_close_confirmation(self):
+        metric=analyze_history(self.history([100+i for i in range(21)],[100]*20+[160]))
+        metric['price']=150
+        metric['close_price']=100
+        self.assertFalse(scenario(metric)['trigger_confirmed'])
+
+    def test_broken_support_is_not_a_buy_candidate(self):
+        metric={'price':80,'support20':100,'atr14':4,'ma5':110,'day_change':1.5,
+                'close_position':.8,'volume_ratio':1.4,'trend':'下行','return5':-8}
+        advice=scenario(metric,held=True,fair_price=200)
+        self.assertIn('失效',advice['action'])
+
 
 if __name__=='__main__':
     unittest.main()

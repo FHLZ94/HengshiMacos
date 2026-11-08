@@ -4,3 +4,5 @@ pyinstaller>=6.11.0
 pywebview>=6.2.1,<7
 trafilatura>=2.3,<3
 googlenewsdecoder>=0.2,<1
+numpy>=2.2,<3
+tzdata>=2025.2

@@ -19,10 +19,14 @@ def analyze_history(history):
     day_change=(closes[-1]/closes[-2]-1)*100
     volume_ratio=volumes[-1]/(sum(volumes[-21:-1])/20)
     previous_ratio=volumes[-2]/(sum(volumes[-22:-2])/20) if len(bars)>=22 and sum(volumes[-22:-2])>0 else None
+    true_ranges=[max(float(bars[i]['high'])-float(bars[i]['low']),
+                     abs(float(bars[i]['high'])-closes[i-1]),abs(float(bars[i]['low'])-closes[i-1]))
+                 for i in range(max(1,len(bars)-14),len(bars))]
     close_position=(float(last['close'])-float(last['low']))/(float(last['high'])-float(last['low'])) if float(last['high'])>float(last['low']) else None
     trend=('上行' if closes[-1]>ma5>ma20 and return5>0 else
            '下行' if closes[-1]<ma5<ma20 and return5<0 else '震荡')
-    return {'ticker':history['ticker'],'date':last['date'],'price':closes[-1],
+    return {'ticker':history['ticker'],'date':last['date'],'price':closes[-1],'close_price':closes[-1],
+            'atr14':round(sum(true_ranges)/len(true_ranges),4),
             'ma5':round(ma5,2),'ma20':round(ma20,2),'return5':round(return5,2),
             'support20':round(min(float(row['low']) for row in bars[-20:]),2),
             'resistance20':round(max(float(row['high']) for row in bars[-20:]),2),
@@ -59,6 +63,12 @@ def scenario(metric, held=False, negative_event=False, fair_price=None, analyst_
     zone_high=round(support*1.08,2)
     trigger=round(max(metric['ma5'],support*1.025),2)
     risk=round(support*.975,2)
+    atr=metric.get('atr14')
+    if atr and atr>0:
+        zone_low=round(support+.1*atr,2)
+        zone_high=round(support+atr,2)
+        trigger=round(max(metric['ma5'],support+.5*atr),2)
+        risk=round(max(.01,support-.75*atr),2)
     fair_gap=(fair_price/price-1)*100 if fair_price and price>0 else None
     target_gap=(analyst_target/price-1)*100 if analyst_target and price>0 else None
     cheap=fair_gap is not None and fair_gap>=15
@@ -66,16 +76,19 @@ def scenario(metric, held=False, negative_event=False, fair_price=None, analyst_
     near_support=price<=zone_high
     reversal=(metric['day_change']>0 and metric['close_position'] is not None
               and metric['close_position']>=.65 and metric['volume_ratio']>=1.1)
-    if cheap and near_support and reversal:
+    if price<risk:
+        action='支撑失效，复核风险' if held else '等待支撑重建'
+        basis=f'最近报价已低于风险失效价 {risk:.2f}，原关注区间需要重新评估'
+    elif cheap and near_support and reversal:
         action='分批买入候选' if not held else '分批加仓候选'
-        basis=f'较中性估值低 {fair_gap:.0f}%，接近20日低位且出现量价修复'
+        basis=f'至中性估值参考空间 {fair_gap:.0f}%，接近20日低位且出现量价修复'
     elif (cheap or target_discount) and near_support and reversal:
         action='分批买入候选' if not held else '分批加仓候选'
-        reason=f'较中性估值低 {fair_gap:.0f}%' if cheap else f'较分析师一年目标价低 {target_gap:.0f}%'
+        reason=f'至中性估值参考空间 {fair_gap:.0f}%' if cheap else f'至分析师一年目标价空间 {target_gap:.0f}%'
         basis=f'{reason}，进入低位区并出现收盘修复；须等待确认价'
     elif (cheap or target_discount) and near_support:
         action='重点关注'
-        reason=f'较中性估值低 {fair_gap:.0f}%' if cheap else f'较分析师一年目标价低 {target_gap:.0f}%'
+        reason=f'至中性估值参考空间 {fair_gap:.0f}%' if cheap else f'至分析师一年目标价空间 {target_gap:.0f}%'
         basis=f'{reason}，价格进入20日低位区，等待承接确认'
     elif metric['trend']=='上行' and metric['volume_ratio']>=1.2 and (fair_gap is None or fair_gap>=-5):
         action='回撤买入候选' if not held else '持有，回撤加仓候选'
@@ -100,10 +113,10 @@ def scenario(metric, held=False, negative_event=False, fair_price=None, analyst_
         basis='两个公开行情来源相差超过 2.5%，交易价位暂不作为动作依据'
     return {'action':action,'horizon':'1-5个交易日','basis':basis,
             'confirm':f'收盘站上 {trigger:.2f} 且量比达到 1.2；若在区间内修复，可考虑分批',
-            'invalidate':f'跌破 {risk:.2f}（20日低点下方约2.5%）或盈利预期显著下修',
+            'invalidate':f'跌破 {risk:.2f}（20日低点下方约0.75倍日均真实波幅）或盈利预期显著下修' if atr else f'跌破 {risk:.2f}（20日低点下方约2.5%）或盈利预期显著下修',
             'watch_zone':[zone_low,zone_high],'buy_trigger':trigger,
             'risk_price':risk,'valuation':valuation,
             'in_watch_zone':zone_low<=price<=zone_high,
-            'trigger_confirmed':price>=trigger and metric['volume_ratio']>=1.2,
+            'trigger_confirmed':metric.get('close_price',price)>=trigger and metric['volume_ratio']>=1.2,
             'valuation_gap_pct':round(fair_gap,1) if fair_gap is not None else None,
             'target_gap_pct':round(target_gap,1) if target_gap is not None else None}

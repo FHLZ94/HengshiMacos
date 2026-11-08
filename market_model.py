@@ -1,8 +1,21 @@
-"""Historical analog probabilities, defined outcomes and chronological validation."""
-from datetime import date
+"""Daily QQQ probabilities: purged walk-forward ridge logistic and past-only calibration."""
+from datetime import date, datetime, timezone
 from math import sqrt
+import hashlib
+import json
+from zoneinfo import ZoneInfo
+import numpy as np
 
-PARTICIPATION_ETFS=('QQQ','SPY','SMH','IWM','RSP','XLF','XLE','XLI','XLY')
+MODEL_VERSION = '2.0.0'
+FEATURE_NAMES = ('5日动量','20日动量','60日动量','20日均线偏离','60日均线偏离',
+                 '63日回撤','相对标普强弱','半导体相对强弱','波动率水平','波动率变化',
+                 '短长波动比','量比','收盘位置','下跌放量')
+
+
+def history_key(histories):
+    payload = [(h['ticker'], h.get('bars', [])) for h in histories
+               if h['ticker'] in ('QQQ','SPY','SMH','^VIX')]
+    return hashlib.sha256(json.dumps(sorted(payload), sort_keys=True).encode()).hexdigest()
 
 
 def _pct(current, previous):
@@ -10,146 +23,186 @@ def _pct(current, previous):
 
 
 def _prepare(histories):
-    mapping={row['ticker']:{bar['date']:bar for bar in row['bars']} for row in histories}
-    if not all(ticker in mapping for ticker in ('QQQ','SPY','SMH','^VIX')):
+    now = datetime.now(timezone.utc).astimezone(ZoneInfo('America/New_York'))
+    cutoff = now.date().isoformat()
+    closed = (now.hour,now.minute)>=(16,15)
+    mapping = {r['ticker']: {b['date']: b for b in r.get('bars', [])
+                            if float(b.get('close', 0)) > 0 and
+                            (b['date']<cutoff or b['date']==cutoff and closed)} for r in histories}
+    if not all(mapping.get(t) for t in ('QQQ','SPY','SMH','^VIX')):
         return []
-    common=sorted(set(mapping['QQQ']) & set(mapping['SPY']) & set(mapping['SMH']))
-    vix_dates=sorted(mapping['^VIX'])
-    rows=[];vix_index=0
-    for day in common:
-        while vix_index+1<len(vix_dates) and vix_dates[vix_index+1]<=day:
-            vix_index+=1
-        vix_day=vix_dates[vix_index] if vix_dates and vix_dates[vix_index]<=day else None
-        if not vix_day or (date.fromisoformat(day)-date.fromisoformat(vix_day)).days>4:
-            continue
-        rows.append({'date':day,'qqq':mapping['QQQ'][day],
-                     'spy':mapping['SPY'][day],'smh':mapping['SMH'][day],
-                     'vix':mapping['^VIX'][vix_day]['close'],'vix_date':vix_day})
+    days = sorted(set(mapping['QQQ']) & set(mapping['SPY']) & set(mapping['SMH']))
+    vdays = sorted(mapping['^VIX']); vi = 0; rows = []
+    for day in days:
+        while vi + 1 < len(vdays) and vdays[vi + 1] <= day: vi += 1
+        vd = vdays[vi]
+        if vd > day or (date.fromisoformat(day)-date.fromisoformat(vd)).days > 4: continue
+        bars = [mapping[t][day] for t in ('QQQ','SPY','SMH')]
+        if any(not all(k in b for k in ('high','low','volume')) for b in bars): continue
+        rows.append(dict(date=day, qqq=bars[0], spy=bars[1], smh=bars[2],
+                         vix=float(mapping['^VIX'][vd]['close']), vix_date=vd))
     return rows
 
 
-def _features(rows,index):
-    if index<21:return None
-    current=rows[index]
-    qqq=current['qqq']
-    recent=[row['qqq']['close'] for row in rows[index-19:index+1]]
-    previous_volumes=[row['qqq']['volume'] for row in rows[index-20:index]]
-    mean_volume=sum(previous_volumes)/20
-    if not mean_volume or min(recent)<=0:return None
-    return {'return5':_pct(qqq['close'],rows[index-5]['qqq']['close']),
-            'ma20_gap':_pct(qqq['close'],sum(recent)/20),
-            'drawdown20':_pct(qqq['close'],max(recent)),
-            'volume_ratio':qqq['volume']/mean_volume,
-            'spy5':_pct(current['spy']['close'],rows[index-5]['spy']['close']),
-            'smh5':_pct(current['smh']['close'],rows[index-5]['smh']['close']),
-            'vix':float(current['vix'])}
+def _features(rows, i):
+    if i < 63: return None
+    q = np.array([r['qqq']['close'] for r in rows[i-63:i+1]], dtype=float)
+    returns = np.diff(np.log(q)); vol = max(float(np.std(returns[-20:])), .003)
+    vol60 = max(float(np.std(returns)), .003)
+    b = rows[i]['qqq']; volumes = [r['qqq']['volume'] for r in rows[i-20:i]]
+    vr = b['volume']/max(float(np.mean(volumes)), 1)
+    r5 = float(np.log(q[-1]/q[-6])); r20 = float(np.log(q[-1]/q[-21]))
+    spy5 = np.log(rows[i]['spy']['close']/rows[i-5]['spy']['close'])
+    smh5 = np.log(rows[i]['smh']['close']/rows[i-5]['smh']['close'])
+    pos = (b['close']-b['low'])/max(b['high']-b['low'], .001)
+    values = [r5/(vol*sqrt(5)), r20/(vol*sqrt(20)), np.log(q[-1]/q[0])/(vol60*sqrt(63)),
+              np.log(q[-1]/np.mean(q[-20:]))/(vol*sqrt(20)),
+              np.log(q[-1]/np.mean(q[-60:]))/(vol60*sqrt(60)),
+              np.log(q[-1]/max(q))/(vol60*sqrt(63)),
+              (r5-spy5)/(vol*sqrt(5)), (smh5-r5)/(vol*sqrt(5)),
+              np.log(max(rows[i]['vix'], 1)/20),
+              np.log(max(rows[i]['vix'],1)/max(rows[i-5]['vix'],1)),
+              vol/vol60, np.log(max(vr,.01)), pos, np.log(max(vr,.01))*min(0,returns[-1]/vol)]
+    return np.clip(np.array(values, dtype=float), -8, 8)
 
 
-def _distance(left,right):
-    scales={'return5':5,'ma20_gap':5,'drawdown20':6,'volume_ratio':0.7,
-            'spy5':4,'smh5':7,'vix':12}
-    return sum(((left[key]-right[key])/scale)**2 for key,scale in scales.items())
+def _outcome(rows, i, horizon):
+    if i+horizon >= len(rows): return np.nan
+    if horizon == 5: return float(rows[i+5]['qqq']['close'] > rows[i]['qqq']['close'])
+    future = rows[i+1:i+11]
+    return float(min(r['qqq']['low'] for r in future) >= rows[i]['qqq']['low']
+                 and future[-1]['qqq']['close'] > rows[i]['qqq']['close'])
 
 
-def _neighbors(rows,features,prior_index,count=45):
-    candidates=[]
-    for index in range(21,prior_index-10):
-        other=_features(rows,index)
-        if other:candidates.append((_distance(features,other),index))
-    selected=[]
-    for distance,index in sorted(candidates):
-        if all(abs(index-prior)>=10 for _,prior in selected):
-            selected.append((distance,index))
-            if len(selected)>=count:break
-    return selected
+def _sigmoid(x): return 1/(1+np.exp(-np.clip(x,-30,30)))
 
 
-def _outcomes(rows,index):
-    today=rows[index]['qqq']
-    future=rows[index+1:index+11]
-    if len(future)!=10:return None
-    up5=future[4]['qqq']['close']>today['close']
-    stable10=min(row['qqq']['low'] for row in future)>=today['low'] and future[-1]['qqq']['close']>today['close']
-    return up5,stable10
+def _fit(x, y, penalty=35):
+    # Scale only on training data. Strong ridge regularisation limits false precision.
+    mean = x.mean(axis=0); scale = np.maximum(x.std(axis=0), .05)
+    a = np.column_stack((np.ones(len(x)), (x-mean)/scale))
+    beta = np.zeros(a.shape[1]); rate = (y.sum()+1)/(len(y)+2)
+    beta[0] = np.log(rate/(1-rate))
+    reg = np.diag([.001]+[penalty]*(a.shape[1]-1))
+    for _ in range(25):
+        p = _sigmoid(a@beta); w = np.maximum(p*(1-p), 1e-5)
+        step = np.linalg.solve((a.T*w)@a+reg, a.T@(p-y)+reg@beta)
+        beta -= step
+        if np.max(np.abs(step)) < 1e-6: break
+    return mean, scale, beta
 
 
-def _wilson(success,total):
-    if not total:return None
-    z=1.96
-    p=success/total
-    denominator=1+z*z/total
-    middle=(p+z*z/(2*total))/denominator
-    spread=z*sqrt((p*(1-p)+z*z/(4*total))/total)/denominator
-    return [round(max(0,middle-spread)*100,1),round(min(1,middle+spread)*100,1)]
+def _predict(fit, x):
+    mean, scale, beta = fit
+    return _sigmoid(beta[0]+((x-mean)/scale)@beta[1:])
 
 
-def _regime(features):
-    score=50
-    score+=max(-18,min(18,features['return5']*2.1))
-    score+=max(-12,min(12,features['ma20_gap']*1.6))
-    score+=max(-12,min(8,(18-features['vix'])*0.8))
-    score+=max(-8,min(8,(features['smh5']-features['spy5'])*0.8))
-    score=max(0,min(100,round(score)))
-    label=('极度悲观' if score<20 else '悲观' if score<35 else '偏谨慎' if score<46
-           else '中性' if score<56 else '偏乐观' if score<69 else '乐观' if score<83 else '过热')
+def _wilson(success, total):
+    if not total: return None
+    z = 1.96; p = success/total; den = 1+z*z/total
+    mid = (p+z*z/(2*total))/den
+    spread = z*sqrt((p*(1-p)+z*z/(4*total))/total)/den
+    return [round(100*max(0,mid-spread),1), round(100*min(1,mid+spread),1)]
+
+
+def _forecast(x, y, horizon):
+    n = len(x); raw = np.full(n, np.nan)
+    # Labels ending on the decision close are knowable; overlapping future labels
+    # are purged. Each historical forecast is fitted with earlier data only.
+    for origin in range(504+horizon, n, 63):
+        end = origin-horizon+1; start = max(0,end-1260)
+        fit = _fit(x[start:end], y[start:end])
+        raw[origin:origin+63] = _predict(fit, x[origin:origin+63])
+    scored = []; latest = None
+    anchors = sorted(set(range(504+horizon,n,horizon)) | {n-1})
+    for i in anchors:
+        if not np.isfinite(raw[i]): continue
+        eligible = np.arange(max(0,i-1260), i-horizon+1, horizon)
+        known = y[eligible]; known = known[np.isfinite(known)]
+        base = float((known.sum()+1)/(len(known)+2))
+        ci = np.arange(max(0,i-1008),i-horizon+1,horizon)
+        ci = ci[np.isfinite(raw[ci]) & np.isfinite(y[ci])]
+        calibrated = base; calibration_n = len(ci)
+        if len(ci) >= 40 and min(sum(y[ci]),len(ci)-sum(y[ci])) >= 6:
+            logits = np.log(np.clip(raw[ci],.01,.99)/(1-np.clip(raw[ci],.01,.99)))[:,None]
+            cal = _fit(logits, y[ci], penalty=10)
+            current_logit = np.array([[np.log(raw[i]/(1-raw[i]))]])
+            calibrated = .65*float(_predict(cal,current_logit)[0])+.35*base
+        past = [s for s in scored if s['index']+horizon <= i][-126:]
+        skill = (np.mean([(s['base']-s['y'])**2 for s in past])-
+                 np.mean([(s['candidate']-s['y'])**2 for s in past])) if past else 0
+        use_model = len(past) >= 40 and calibration_n >= 40 and skill > .001
+        probability = calibrated if use_model else base
+        latest = dict(probability=probability, method='校准多因子' if use_model else '历史基准收缩',
+                      training_samples=int(len(known)), calibration_samples=int(calibration_n),
+                      interval=_wilson(float(known.sum()),len(known)))
+        if np.isfinite(y[i]):
+            scored.append(dict(index=i,p=probability,base=base,candidate=calibrated,y=float(y[i])))
+    if latest is None:
+        known = y[np.arange(0,max(1,n-horizon),horizon)]
+        known = known[np.isfinite(known)]
+        latest = dict(probability=float((known.sum()+1)/(len(known)+2)),
+                      method='历史基准收缩', training_samples=int(len(known)),
+                      calibration_samples=0, interval=_wilson(float(known.sum()),len(known)))
+    evaluation = scored[-252:]
+    brier = float(np.mean([(s['p']-s['y'])**2 for s in evaluation])) if evaluation else None
+    baseline = float(np.mean([(s['base']-s['y'])**2 for s in evaluation])) if evaluation else None
+    similar = [s for s in evaluation if abs(s['p']-latest['probability']) <= .10]
+    if latest['method']=='校准多因子' and len(similar) >= 30:
+        latest['interval'] = _wilson(sum(s['y'] for s in similar),len(similar))
+        latest['interval_scope'] = '相近预测档历史发生率区间'
+    else: latest['interval_scope'] = '不重叠历史样本发生率区间'
+    latest.update(validation_count=len(evaluation),
+                  brier=round(brier,4) if brier is not None else None,
+                  baseline_brier=round(baseline,4) if baseline is not None else None,
+                  skill=round(1-brier/baseline,4) if baseline else None,
+                  calibration_bins=[dict(low=lo,high=lo+20,n=len(group),
+                     predicted=round(float(np.mean([s['p'] for s in group]))*100,1),
+                     observed=round(float(np.mean([s['y'] for s in group]))*100,1))
+                    for lo in range(0,100,20)
+                    if (group:=[s for s in evaluation if lo<=s['p']*100<lo+20])])
+    return latest
+
+
+def _regime(r5, gap, vix, smh5, spy5):
+    score = round(max(0,min(100,50+np.clip(r5*2.1,-18,18)+np.clip(gap*1.6,-12,12)
+                    +np.clip((18-vix)*.8,-12,8)+np.clip((smh5-spy5)*.8,-8,8))))
+    label = ('极度悲观' if score<20 else '悲观' if score<35 else '偏谨慎' if score<46
+             else '中性' if score<56 else '偏乐观' if score<69 else '乐观' if score<83 else '过热')
     return score,label
 
 
 def analyze_market(histories):
-    rows=_prepare(histories)
-    if len(rows)<300:return {'available':False,'reason':'QQQ、SPY、SMH 与 VIX 的共同历史不足 300 日'}
-    latest=len(rows)-1
-    features=_features(rows,latest)
-    if features is None:return {'available':False,'reason':'最近交易日历史数据不足'}
-    near_low=features['drawdown20']<=-4
-    neighbors=_neighbors(rows,features,latest)
-    if len(neighbors)<30:return {'available':False,'reason':'独立相似样本少于 30 组'}
-    outcomes=[_outcomes(rows,index) for _,index in neighbors]
-    up_count=sum(item[0] for item in outcomes)
-    bottom_count=sum(item[1] for item in outcomes)
-    score,label=_regime(features)
-    # Each validation date uses only observations that ended before that date.
-    checks=[]
-    for index in range(max(300,latest-260),latest-10,5):
-        past=_neighbors(rows,_features(rows,index),index,count=35)
-        if len(past)<25:continue
-        predicted=sum(_outcomes(rows,prior)[0] for _,prior in past)/len(past)
-        actual=_outcomes(rows,index)[0]
-        known=[_outcomes(rows,prior)[0] for prior in range(21,index-10)]
-        baseline_rate=sum(known)/len(known)
-        checks.append((predicted,actual,baseline_rate))
-    brier=sum((p-int(actual))**2 for p,actual,_ in checks)/len(checks) if checks else None
-    baseline=sum((base-int(actual))**2 for _,actual,base in checks)/len(checks) if checks else None
-    day=rows[-1]['date']
-    qqq=rows[-1]['qqq']
-    previous=rows[-2]['qqq']
-    absorption=('放量承接增强' if previous['close']<rows[-3]['qqq']['close'] and qqq['close']>previous['close']
-                and features['volume_ratio']>=1.2 and qqq['close']>=qqq['low']+(qqq['high']-qqq['low'])*0.7
-                else '反弹量能偏弱' if previous['close']<rows[-3]['qqq']['close'] and qqq['close']>previous['close']
-                else '未见明确承接信号')
-    participation=0
-    participation_total=0
-    for ticker in PARTICIPATION_ETFS:
-        history=next((item for item in histories if item['ticker']==ticker),None)
-        if not history:continue
-        usable=[bar for bar in history['bars'] if bar['date']<=day]
-        if len(usable)<20 or usable[-1]['date']!=day:continue
-        average=sum(bar['close'] for bar in usable[-20:])/20
-        participation+=usable[-1]['close']>average
-        participation_total+=1
-    return {'available':True,'date':day,'vix_date':rows[-1]['vix_date'],
-            'regime':label,'regime_score':score,
-            'participation':participation,'participation_total':participation_total,
-            'participation_scope':'、'.join(ticker for ticker in PARTICIPATION_ETFS
-                                           if any(item['ticker']==ticker for item in histories)),
-            'absorption':absorption,'qqq_return5':round(features['return5'],2),
-            'smh_return5':round(features['smh5'],2),
-            'volume_ratio':round(features['volume_ratio'],2),'vix':round(features['vix'],2),
-            'near_20day_low':near_low,'up5_pct':round(up_count/len(neighbors)*100,1),
-            'up5_interval':_wilson(up_count,len(neighbors)),
-            'bottom10_pct':round(bottom_count/len(neighbors)*100,1) if near_low else None,
-            'bottom10_interval':_wilson(bottom_count,len(neighbors)) if near_low else None,
-            'samples':len(neighbors),'history_days':len(rows),
-            'validation_count':len(checks),'brier':round(brier,3) if brier is not None else None,
-            'baseline_brier':round(baseline,3) if baseline is not None else None,
-            'validated_better_than_baseline':brier is not None and baseline is not None and brier<baseline}
+    rows = _prepare(histories)
+    if len(rows) < 300: return dict(available=False,reason='QQQ、SPY、SMH 与 VIX 共同历史不足300日')
+    x = np.array([_features(rows,i) for i in range(63,len(rows))])
+    forecasts = {}
+    for horizon in (5,10):
+        y = np.array([_outcome(rows,i,horizon) for i in range(63,len(rows))])
+        forecasts[horizon] = _forecast(x,y,horizon)
+    up,bottom = forecasts[5],forecasts[10]
+    b = rows[-1]['qqq']; previous = rows[-2]['qqq']; day = rows[-1]['date']
+    q20 = [r['qqq']['close'] for r in rows[-20:]]
+    vr = b['volume']/max(np.mean([r['qqq']['volume'] for r in rows[-21:-1]]),1)
+    r5 = _pct(b['close'],rows[-6]['qqq']['close'])
+    smh5 = _pct(rows[-1]['smh']['close'],rows[-6]['smh']['close'])
+    spy5 = _pct(rows[-1]['spy']['close'],rows[-6]['spy']['close'])
+    score,label = _regime(r5,_pct(b['close'],np.mean(q20)),rows[-1]['vix'],smh5,spy5)
+    rebound = previous['close']<rows[-3]['qqq']['close'] and b['close']>previous['close']
+    absorption = ('放量承接增强' if rebound and vr>=1.2 and b['close']>=b['low']+(b['high']-b['low'])*.7
+                  else '反弹量能偏弱' if rebound else '未见明确承接信号')
+    return dict(available=True,model_version=MODEL_VERSION,date=day,vix_date=rows[-1]['vix_date'],
+        computed_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
+        regime=label,regime_score=score,absorption=absorption,vix=round(rows[-1]['vix'],2),
+        qqq_return5=round(r5,2),smh_return5=round(smh5,2),volume_ratio=round(float(vr),2),
+        near_20day_low=_pct(b['close'],max(q20))<=-4,
+        up5_pct=round(up['probability']*100,1),up5_interval=up['interval'],
+        bottom10_pct=round(bottom['probability']*100,1),bottom10_interval=bottom['interval'],
+        up5=up,bottom10=bottom,samples=up['training_samples'],history_days=len(rows),
+        history_start=rows[0]['date'],validation_count=up['validation_count'],
+        brier=up['brier'],baseline_brier=up['baseline_brier'],
+        validated_better_than_baseline=up['method']=='校准多因子',
+        up5_definition='QQQ未来第5个交易日收盘价高于最新完整交易日收盘价',
+        bottom10_definition='QQQ未来10个交易日最低价不低于本日最低价，且第10日收盘高于本日收盘；这是低点守稳事件，不是长期底部保证',
+        feature_names=list(FEATURE_NAMES),
+        limitations='日线模型每天收盘后更新输入；盘前盘后报价单独刷新。CNN和当前成分广度用于情绪解释，未伪造其历史输入。')
