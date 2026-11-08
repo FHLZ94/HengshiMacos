@@ -234,3 +234,4 @@ article.decision-card{position:relative;padding:0;display:block;overflow:hidden;
 .public-post-setting{display:block;margin:15px 0 9px;font-size:12px;color:#6f8593}.public-post-setting textarea{display:block;width:100%;margin-top:7px;border:1px solid #d4e0e5;border-radius:7px;padding:8px;font-size:12px;line-height:1.5}
 @media(max-width:1000px){.pulse-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:650px){.pulse-grid{grid-template-columns:1fr}.pulse-grid .metric{min-height:120px}}
+.absorption-pulse .pair-values strong{font-size:14px;line-height:1.6}.absorption-pulse .pair-values small{font-size:11px;line-height:1.6}

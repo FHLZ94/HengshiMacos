@@ -120,7 +120,7 @@ class ResearchRevisionTests(unittest.TestCase):
     def test_offline_refresh_recalculates_before_network_finishes(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
-            with patch.object(main,'APP_DIR',root),patch.object(main,'DB',root/'events.sqlite3'),patch.object(main,'CONFIG',root/'settings.json'),patch.object(DesktopAPI,'_scheduler',lambda s:None),patch.object(DesktopAPI,'_refresh_worker',lambda s,c:None),patch.object(DesktopAPI,'_refresh_public_async',lambda s:None),patch.object(DesktopAPI,'_start_translation',lambda s:None):
+            with patch.object(main,'APP_DIR',root),patch.object(main,'DB',root/'events.sqlite3'),patch.object(main,'CONFIG',root/'settings.json'),patch.object(DesktopAPI,'_scheduler',lambda s:None),patch.object(DesktopAPI,'_refresh_worker',lambda s,c:None),patch.object(DesktopAPI,'_refresh_public_async',lambda s:None),patch.object(DesktopAPI,'_refresh_intraday_async',lambda s:None),patch.object(DesktopAPI,'_start_translation',lambda s:None):
                 main.init_db()
                 h=[self.history(t,400) for t in ('QQQ','SPY','SMH','^VIX')]
                 main.save_snapshot([],[],histories=h)

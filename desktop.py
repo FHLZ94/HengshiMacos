@@ -28,6 +28,7 @@ import securities
 import reference_data
 import event_risk
 import public_intelligence
+import intraday_signals
 from signals import analyze_history, flow_proxy, scenario
 from translation_service import TranslationStore
 
@@ -168,6 +169,8 @@ class DesktopAPI:
         self.sp500_breadth=main.load_market_extra('sp500_breadth')
         self.fund_valuations=main.load_market_extra('fund_valuations') or {}
         self.pe_histories=main.load_market_extra('historical_pe_medians') or {}
+        self.intraday_histories=main.load_market_extra('intraday_history') or {}
+        self._intraday_cache_key=None;self._intraday_cache={}
         cached_model=main.load_market_extra('market_model_v2') or {}
         self._model_key=cached_model.get('input_key')
         self._model_result=cached_model if cached_model.get('model_version')==market_model.MODEL_VERSION else None
@@ -181,6 +184,7 @@ class DesktopAPI:
         self.quote_busy=False
         self.public_busy=False
         self.last_public_check=0
+        self.intraday_busy=False;self.last_intraday_check=0
         self.search_busy=False
         self.search_status=''
         self.search_result_count=0
@@ -214,6 +218,23 @@ class DesktopAPI:
                 self.refresh();last_full=time.monotonic()
             else:self._refresh_session_async()
             if time.monotonic()-self.last_public_check>=120:self._refresh_public_async()
+            if time.monotonic()-self.last_intraday_check>=120:self._refresh_intraday_async()
+
+    def _refresh_intraday_async(self):
+        with self.lock:
+            if self.intraday_busy:return
+            self.intraday_busy=True;config=copy.deepcopy(self.settings)
+        def work():
+            try:
+                rows,health=intraday_signals.fetch(config)
+                if rows:
+                    with self.lock:
+                        self.intraday_histories={**self.intraday_histories,**rows}
+                        main.save_market_extra('intraday_history',self.intraday_histories);self.revision+=1
+            except Exception:logging.exception('Intraday refresh failed')
+            finally:
+                with self.lock:self.intraday_busy=False;self.last_intraday_check=time.monotonic()
+        threading.Thread(target=work,daemon=True).start()
 
     def _refresh_public_async(self):
         with self.lock:
@@ -251,6 +272,7 @@ class DesktopAPI:
     def refresh(self):
         self._start_model(force=True)
         self._refresh_public_async()
+        self._refresh_intraday_async()
         with self.lock:
             if self.busy:return {'ok':True,'message':'已重新计算本地行情，网络同步正在进行'}
             self.busy=True;self.status='正在更新行情与研判';self.revision+=1
@@ -483,6 +505,7 @@ class DesktopAPI:
             breadth=copy.deepcopy(self.sp500_breadth)
             fund_values=copy.deepcopy(self.fund_valuations)
             pe_histories=copy.deepcopy(self.pe_histories)
+            minute_histories=copy.deepcopy(self.intraday_histories)
             model_result=copy.deepcopy(self._model_result)
             model_busy=self.model_busy
             health=copy.deepcopy(self.health);watchlist=list(self.settings['watchlist'])
@@ -612,11 +635,22 @@ class DesktopAPI:
         market_assessment=market_view.compose(model_result,cnn,breadth)
         risks=event_risk.assess_events(news,analyses)
         live_metrics={t:{**m,'live_price':quote_map.get(t,{}).get('price')} for t,m in metrics.items()}
-        environment=event_risk.trading_environment(model_result,risks,live_metrics)
+        minute_key=tuple((t,h.get('fetched_at')) for t,h in sorted(minute_histories.items()))
+        if minute_key!=self._intraday_cache_key:
+            self._intraday_cache={t:intraday_signals.analyze(h) for t,h in minute_histories.items()}
+            self._intraday_cache_key=minute_key
+        minute_signals=copy.deepcopy(self._intraday_cache)
+        for signal in minute_signals.values():
+            ends=[v['asof'] for v in signal['frames'].values() if v.get('available')]
+            if ends:
+                signal['stale']=(datetime.now(timezone.utc)-datetime.fromisoformat(max(ends))).days>5
+                if signal['stale']:signal['available']=False
+        environment=event_risk.trading_environment(model_result,risks,live_metrics,minute_signals)
         observation_key=(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H'),(model_result or {}).get('date'),
-                         tuple((e['url'],e['stage'],e['direction'],e['verified']) for e in risks['events']))
+                         tuple((e['url'],e['stage'],e['direction'],e['verified']) for e in risks['events']),
+                         tuple((t,tuple((k,v.get('asof')) for k,v in m.get('frames',{}).items())) for t,m in minute_signals.items()))
         if observation_key!=self._observation_key:
-            main.save_research_observations(model_result,risks,quote_map);self._observation_key=observation_key
+            main.save_research_observations(model_result,risks,quote_map,minute_signals);self._observation_key=observation_key
         reference_key=hashlib.sha256(json.dumps([(w['ticker'],w['price'],w['fair_price'],w['valuation']['reference_method']) for w in watch]).encode()).hexdigest()[:16]
         return {'revision':revision,'status':status,'busy':busy,'last_sync':last_sync,
                 'search_busy':search_busy,'search_status':search_status,'search_result_count':search_result_count,
@@ -626,7 +660,7 @@ class DesktopAPI:
                           'vix':quote_map.get('^VIX'),'qqq':metrics.get('QQQ'),'smh':metrics.get('SMH'),
                           'spy':metrics.get('SPY'),'series':series,'model':model_result,'model_busy':model_busy,
                           'rotation':{'5':sector_rotation.rotation(histories,5),'20':sector_rotation.rotation(histories,20)},
-                          'assessment':market_assessment,'event_risk':risks,'environment':environment},
+                          'assessment':market_assessment,'event_risk':risks,'environment':environment,'intraday':minute_signals},
                 'health':[{'source':source_name(h['source']),'status':'正常' if h['status']=='ok' else health_reason(h.get('reason') or h['status']),
                            'count':h.get('count'),'checked':local_time(h.get('checked_at'))} for h in health],
                 'settings':{'watchlist':watchlist,'auto_local_proxy':self.settings.get('auto_local_proxy',True),

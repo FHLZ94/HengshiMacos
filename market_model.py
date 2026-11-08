@@ -6,7 +6,7 @@ import json
 from zoneinfo import ZoneInfo
 import numpy as np
 
-MODEL_VERSION = '3.0.0'
+MODEL_VERSION = '3.1.0'
 FEATURE_NAMES = ('5日动量','20日动量','60日动量','20日均线偏离','60日均线偏离',
                  '63日回撤','相对标普强弱','半导体相对强弱','波动率水平','波动率变化',
                  '短长波动比','量比','收盘位置','下跌放量')
@@ -208,7 +208,7 @@ def analyze_market(histories):
     score,label = _regime(r5,_pct(b['close'],np.mean(q20)),rows[-1]['vix'],smh5,spy5)
     rebound = previous['close']<rows[-3]['qqq']['close'] and b['close']>previous['close']
     absorption = ('放量承接增强' if rebound and vr>=1.2 and b['close']>=b['low']+(b['high']-b['low'])*.7
-                  else '反弹量能偏弱' if rebound else '未见明确承接信号')
+                  else '放量修复，尾盘承接偏弱' if rebound and vr>=1.2 else '反弹量能偏弱' if rebound else '未见明确承接信号')
     return dict(available=True,model_version=MODEL_VERSION,targets=targets,date=day,vix_date=rows[-1]['vix_date'],
         computed_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
         regime=label,regime_score=score,absorption=absorption,vix=round(rows[-1]['vix'],2),
@@ -240,7 +240,9 @@ def oversold_setup(rows,ticker,x):
     return {'rsi14':round(float(rsi),1),'lower_tail_pct':round(rank,1),'rank_samples':len(deviations),
             'rank_definition':'20日均线偏离经同期波动率标准化后的历史下侧分位，越小越接近历史低位',
             'extreme_oversold':bool(rank<=1 and rsi<35),'oversold':bool(rank<=5 and rsi<40),
-            'label':'极端超卖' if rank<=1 and rsi<35 else '明显超卖' if rank<=5 and rsi<40 else '偏超卖' if rank<=15 else '非明显超卖',
+            'overbought':bool(rank>=95 and rsi>60),'extreme_overbought':bool(rank>=99 and rsi>65),
+            'upper_tail_pct':round(100-rank,1),
+            'label':'极端超卖' if rank<=1 and rsi<35 else '明显超卖' if rank<=5 and rsi<40 else '极端超买' if rank>=99 and rsi>65 else '明显超买' if rank>=95 and rsi>60 else '偏超卖' if rank<=15 else '偏热' if rank>=85 else '常态区间',
             'volume_ratio':round(vr,2),'close_position':round(position,2),
             'recovery_confirmed':bool(b['close']>prior['close'] and position>=.65 and vr>=1.1),
             'return5':round(float(_pct(closes[-1],closes[-6])),2)}

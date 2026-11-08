@@ -239,12 +239,13 @@ def load_market_extra(name):
     return json.loads(row[0]) if row else None
 
 
-def save_research_observations(model,risks,quotes):
+def save_research_observations(model,risks,quotes,intraday=None):
     if not model or not model.get('available'):return
     import hashlib
     now=datetime.now(timezone.utc);hour=now.replace(minute=0,second=0,microsecond=0).isoformat()
     events=risks.get('events',[])
-    identity=json.dumps([(e['url'],e['stage'],e['direction'],e['verified']) for e in events],sort_keys=True)
+    minute_key=[(t,[(k,v.get('asof'),v.get('divergence'),v.get('top_divergence')) for k,v in a.get('frames',{}).items()]) for t,a in (intraday or {}).items()]
+    identity=json.dumps(([(e['url'],e['stage'],e['direction'],e['verified']) for e in events],minute_key),sort_keys=True)
     event_key=hashlib.sha256((model['date']+identity).encode()).hexdigest()[:24]
     with sqlite3.connect(DB) as con:
         for ticker,target in model.get('targets',{}).items():
@@ -253,6 +254,7 @@ def save_research_observations(model,risks,quotes):
                 'up5_pct':target['up5_pct'],'up3_pct':target['up3_pct'],'setup':target['setup'],
                 'risk':risks.get(ticker),'sources':[e['url'] for e in events],
                 'quote_price':quote.get('price'),'quote_day':quote.get('asof'),'quote_session':quote.get('session'),
+                'intraday':(intraday or {}).get(ticker),
                 'endpoint':'历史概率以完整日线收盘为起点；未来新闻模型须按当时可执行时段重新匹配标签'}
             con.execute('INSERT OR IGNORE INTO research_observations VALUES (?,?,?,?,?)',
                         (now.isoformat(),hour,ticker,event_key,json.dumps(payload,ensure_ascii=False)))

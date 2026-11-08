@@ -55,23 +55,26 @@ function renderPulse(){
     $('#pulseGrid').innerHTML=metric('QQQ / SMH','计算中','分别训练、校准与检验');$('#pulseFoot').textContent='正在计算概率、超卖位置与事件风险。';$('#modelMethod').textContent='等待有效历史数据';return;
   }
   const codes=['QQQ','SMH'],assessment=state.market.assessment || {},cnn=assessment.cnn;
-  const worst=codes.some(t=>risks[t]?.critical_negative);
-  $('#pulseHeadline').textContent=worst?'重大事件风险上升，优先核对敞口':codes.every(t=>model.targets[t].setup.oversold)?'科技与半导体进入明显超卖区，承接决定能否出手':assessment.headline || '短线情绪与交易环境';
+  const worst=codes.some(t=>risks[t]?.critical_negative),minute=state.market.intraday || {};
+  const hot=codes.some(t=>model.targets[t].setup.overbought),cold=codes.some(t=>model.targets[t].setup.oversold);
+  $('#pulseHeadline').textContent=worst?'重大事件风险上升，优先核对敞口':hot && cold?'科技与半导体位置分化，分别核对过热与超卖':hot?'部分指数高位偏热，核对拥挤与追价风险':codes.every(t=>model.targets[t].setup.oversold)?'科技与半导体进入明显超卖区，承接决定能否出手':assessment.headline || '短线情绪与交易环境';
   $('#pulseDate').textContent=`日线截至 ${model.date} · ${state.market.model_busy?'正在重算':'计算 '+new Date(model.computed_at).toLocaleTimeString('zh-CN',{hour12:false})}`;
   const events=risks.events || [],top=events.find(e=>Math.max(...Object.values(e.scores))>=25),matched=top&&state.news.find(n=>n.url===top.url);
   const eventTitle=matched?.translated?matched.title:top?`${top.stage} · ${top.evidence_label}`:'近期开源情报未见高等级已核验冲击';
   const eventCard=`<div class="metric event-pulse"><span class="label">重大事件与公开言论</span><strong class="event-risk-level">${escapeHtml(worst?'有已核验负面冲击':risks.coverage_fresh?'持续核对政策与半导体事件':'等待同步近期情报')}</strong>${top?`<button type="button" class="pulse-event-link" data-risk-url="${escapeHtml(top.url)}">${escapeHtml(eventTitle)}</button><span class="meta">${escapeHtml(top.stage)} · 影响分 ${number(Math.max(...Object.values(top.scores)),1)}/100</span>`:'<span class="meta">白宫、国会、半导体及公开帖子</span>'}</div>`;
   $('#pulseGrid').innerHTML=[
-    pairMetric('未来1—3日加仓研判',codes.map(t=>({code:t,value:environment[t]?.label || '等待条件'})),'关注区与失效价见交易参考','action-pulse'),
+    pairMetric('未来1—3日波段研判',codes.map(t=>({code:t,value:environment[t]?.label || '等待条件'})),'关注区与失效价见交易参考','action-pulse'),
     pairMetric('未来5日上涨参考',codes.map(t=>({code:t,value:number(model.targets[t].up5_pct,1)+'%',note:model.targets[t].up5.method})),'各指数分别建模 · 基于完整日线'),
     pairMetric('10日低点守稳参考',codes.map(t=>({code:t,value:number(model.targets[t].bottom10_pct,1)+'%'})),'未来10日守住本日低点且回升'),
-    pairMetric('超卖程度与历史位置',codes.map(t=>({code:t,value:model.targets[t].setup.label,note:`历史下侧 ${number(model.targets[t].setup.lower_tail_pct,1)}% · RSI ${number(model.targets[t].setup.rsi14,1)}`})),'波动调整后的历史分位，越低越罕见'),
+    pairMetric('超买超卖与历史位置',codes.map(t=>{const p=model.targets[t].setup;return {code:t,value:p.label,note:`历史${p.overbought || p.lower_tail_pct>=85?'上':'下'}侧 ${number(p.overbought || p.lower_tail_pct>=85?p.upper_tail_pct:p.lower_tail_pct,1)}% · 日线RSI ${number(p.rsi14,1)}`};}),'双向观察极端位置；拥挤仅为价量代理'),
     eventCard,
-    metric('情绪与承接',model.regime,`${cnn?'CNN '+number(cnn.score,1)+' / 100 · ':''}${model.absorption}`)
+    pairMetric('情绪与承接',codes.map(t=>{const m=minute[t],frames=m?.frames || {};if(!m?.available)return {code:t,value:model.absorption,note:m?.stale?'分钟线缓存较旧，待同步':'正在获取15/30/60分钟结构'};const structure=m.top_confirmed_frames?.length && m.confirmed_frames?.length?'底顶结构分歧':m.top_confirmed_frames?.length?m.top_resonance:m.resonance;return {code:t,value:(environment[t]?.stage || model.targets[t].setup.label)+' · '+m.absorption,note:structure+'；RSI 15/30/60：'+['15','30','60'].map(k=>number(frames[k]?.rsi14,1)).join(' / ')};}),`市场${model.regime}${cnn?' · CNN '+number(cnn.score,1):''}；分钟结构见展开依据`,'absorption-pulse')
   ].join('');
   $('#pulseFoot').textContent=codes.map(t=>`${t}：${environment[t]?.reason || ''}`).join('。')+'。新闻改变风险评级与动作条件；未通过历史检验的消息分数不直接加减概率。';
   const report=(ticker,name,item)=>`<div class="model-report"><strong>${ticker} · ${name}</strong><p>${escapeHtml(item.method)} · 不重叠基准样本 ${item.training_samples} 组 · 按时间检验 ${item.validation_count} 次 · 概率误差 ${number(item.brier,4)} / 基线 ${number(item.baseline_brier,4)}（越小越好）</p><p>${escapeHtml(item.interval_scope)}：${item.interval?.join('–') || '样本不足'}%（历史发生率95%区间，不是未来真实概率保证）。</p></div>`;
   $('#modelMethod').innerHTML=codes.map(t=>report(t,'未来3日上涨',model.targets[t].up3)+report(t,'未来5日上涨',model.targets[t].up5)+report(t,'10日低点守稳',model.targets[t].bottom10)+`<details class="coefficient-report"><summary>${t} 五日模型的指标与权重</summary><p>${model.targets[t].up5.weights_active?'当前输出采用65%校准模型与35%历史基准。':'候选模型暂未提供稳定额外优势，当前输出采用100%历史基准；下列候选系数暂不用于最终概率。'}</p><table><thead><tr><th>指标</th><th>标准化系数</th><th>绝对系数占比</th></tr></thead><tbody>${model.targets[t].up5.feature_weights.map(w=>`<tr><td>${escapeHtml(w.name)}</td><td>${number(w.coefficient,4)}</td><td>${number(w.share_pct,1)}%</td></tr>`).join('')}</tbody></table><p>系数由过去训练数据拟合；占比帮助理解模型，不是因果权重，也不是概率增加的百分点。</p></details>`).join('')+`<p>${escapeHtml(model.up5_definition)}。${escapeHtml(model.bottom10_definition)}。</p><p>历史 ${model.history_start}—${model.date}，${model.history_days} 个共同交易日。${escapeHtml(model.limitations)}</p><p>${escapeHtml(risks.definition || '')}。${escapeHtml(risks.news_model_status || '')}。公开言论、议员提案与已生效政策分别处理。</p>`;
+  $('#modelMethod').innerHTML+=`<details class="coefficient-report"><summary>15 / 30 / 60分钟结构、RSI与承接</summary><table><thead><tr><th>标的/周期</th><th>RSI14</th><th>底背离</th><th>顶背离</th><th>同时间段量比</th><th>截至（美东）</th></tr></thead><tbody>${codes.flatMap(t=>['15','30','60'].map(k=>{const f=minute[t]?.frames?.[k];if(!f?.available)return `<tr><td>${t} ${k}分</td><td colspan="5">${escapeHtml(f?.reason || '等待完整分钟行情')}</td></tr>`;return `<tr><td>${t} ${k}分${f.session_tail?'（尾盘）':''}</td><td>${number(f.rsi14,1)}</td><td>${escapeHtml(f.divergence)}</td><td>${escapeHtml(f.top_divergence)}</td><td>${number(f.same_slot_volume_ratio)} 倍</td><td>${new Date(f.asof).toLocaleString('zh-CN',{timeZone:'America/New_York',month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false})}</td></tr>`;})).join('')}</tbody></table><p>采用RSI14及MACD12/26/9。价格低点或高点须由左右各2根已完成K线确认；尚缺右侧K线时只列候选。15分钟不直接推断30、60分钟必然成立，多周期含同一批成交数据，不相乘成底部或顶部概率。</p><p>成交量与此前相同盘中时间段比较，减少开盘与尾盘放量带来的误判。常规时段按美东09:30锚定，60分钟最后一桶为尾盘30分钟并单独标注；不跨日拼接。结构可能被新消息或价格突破破坏。</p></details>`;
+
 }
 
 function renderEvents() {
