@@ -184,11 +184,13 @@ function renderEventContext(context) {
     <small>${escapeHtml(row.price_confirmation)}</small></div>`).join('');
 }
 async function loadEventContext(url) {
+  const referenceKey=state.reference_key;
   eventContextsLoading.add(url);
   const result=await call('event_market_context',url);
   eventContextsLoading.delete(url);
-  eventContexts.set(url,result);
   const selected=state.news.find((item) => item.id === selectedEvent);
+  if(referenceKey!==state.reference_key){if(selected?.url===url)renderEventDetail();return;}
+  eventContexts.set(url,result);
   if (selected?.url === url) renderEventDetail();
 }
 
