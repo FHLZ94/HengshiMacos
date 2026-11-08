@@ -59,6 +59,19 @@ def ema(values,period):
     return result
 
 
+def wilder_rsi(values,period=6):
+    result=[None]*len(values)
+    if len(values)<=period:return result
+    changes=[b-a for a,b in zip(values,values[1:])]
+    up=mean(max(x,0) for x in changes[:period]);down=mean(max(-x,0) for x in changes[:period])
+    result[period]=100-100/(1+up/down) if down else 100 if up else 50
+    for i in range(period+1,len(values)):
+        up=(up*(period-1)+max(changes[i-1],0))/period
+        down=(down*(period-1)+max(-changes[i-1],0))/period
+        result[i]=100-100/(1+up/down) if down else 100 if up else 50
+    return result
+
+
 def indicators(bars):
     close=[b['close'] for b in bars];rsi=[None]*len(close)
     changes=[b-a for a,b in zip(close,close[1:])]
@@ -75,7 +88,7 @@ def indicators(bars):
 
 def frame(bars,minutes):
     if len(bars)<60:return {'available':False,'minutes':minutes,'reason':'已完成样本不足60根'}
-    rsi,dif,hist=indicators(bars);last=len(bars)-1
+    rsi,dif,hist=indicators(bars);rsi1=wilder_rsi([b['close'] for b in bars],6);last=len(bars)-1
     pivots=[i for i in range(max(35,last-100),last-1)
             if bars[i]['low']<min(b['low'] for b in bars[i-2:i])
             and bars[i]['low']<=min(b['low'] for b in bars[i+1:i+3])]
@@ -141,14 +154,14 @@ def frame(bars,minutes):
     ranges=[max(bars[i]['high']-bars[i]['low'],abs(bars[i]['high']-bars[i-1]['close']),abs(bars[i]['low']-bars[i-1]['close'])) for i in range(len(bars)-14,len(bars))]
     atr=mean(ranges);move=abs(current['close']-bars[-4]['close'])
     near_high=current['close']>=max(b['high'] for b in bars[-20:])-atr
-    high_stall=bool(near_high and rsi[-1]>=55 and move<=.35*atr and ((ratio is not None and ratio>=1.2) or pressure<=-.25))
+    high_stall=bool(near_high and rsi1[-1]>=70 and move<=.35*atr and ((ratio is not None and ratio>=1.2) or pressure<=-.25))
     absorption='放量承接' if rising and pressure>0 and position>=.65 and ratio and ratio>=1.2 else '初步承接' if rising and pressure>0 and position>=.6 else '放量卖压' if not rising and pressure<0 and ratio and ratio>=1.2 else '承接偏弱'
     return {'available':True,'minutes':minutes,'bars':len(bars),'asof':datetime.fromtimestamp(current['end'],timezone.utc).isoformat(),
-            'rsi14':round(rsi[-1],1),'oversold':rsi[-1]<=30,'divergence':'形态确认' if confirmed else '候选背离' if candidate else '未见当前背离',
+            'rsi14':round(rsi[-1],1),'rsi1':round(rsi1[-1],1),'oversold':rsi1[-1]<=30,'divergence':'形态确认' if confirmed else '候选背离' if candidate else '未见当前背离',
             'confirmed':bool(confirmed),'candidate':bool(candidate),'evidence':confirmed or candidate,
             'top_divergence':'形态确认' if confirmed_top else '候选背离' if candidate_top else '未见当前背离',
             'top_confirmed':bool(confirmed_top),'top_candidate':bool(candidate_top),'top_evidence':confirmed_top or candidate_top,
-            'overbought':rsi[-1]>=70,
+            'overbought':rsi1[-1]>=70,
             'same_slot_volume_ratio':round(ratio,2) if ratio is not None else None,'volume_baselines':len(matched),
             'pressure_score':round(pressure*100,1),'absorption':absorption,'session_tail':current.get('session_tail',False),
             'macd_dif':round(dif[-1],5),'macd_histogram':round(hist[-1],5),'histogram_improving':hist[-1]>hist[-2],
@@ -171,7 +184,7 @@ def analyze(history):
     weights={'5':.40,'15':.40,'30':.20}
     bottom_score=sum(weights[k]*(100 if v.get('confirmed') else 40 if v.get('candidate') else 0) for k,v in score_frames.items())
     top_score=sum(weights[k]*(100 if v.get('top_confirmed') else 40 if v.get('top_candidate') else 0) for k,v in score_frames.items())
-    rsi5=frames.get('5',{}).get('rsi14');rsi15=frames.get('15',{}).get('rsi14');rsi30=frames.get('30',{}).get('rsi14')
+    rsi5=frames.get('5',{}).get('rsi1');rsi15=frames.get('15',{}).get('rsi1');rsi30=frames.get('30',{}).get('rsi1')
     rsi_signal=('短线超卖，可小额关注' if rsi5 is not None and rsi15 is not None and rsi5<=30 and rsi15<=30 else
                 '短线超买，避免追价' if rsi5 is not None and rsi15 is not None and rsi5>=70 and rsi15>=70 else
                 '5分超卖，等待15分确认' if rsi5 is not None and rsi5<=30 else
@@ -268,7 +281,7 @@ def fetch(config):
         return ticker,None
     result={}
     with ThreadPoolExecutor(max_workers=2) as pool:
-        for future in as_completed([pool.submit(one,t) for t in ('QQQ','SMH')]):
+        for future in as_completed([pool.submit(one,t) for t in ('QQQ','SPY','SMH','ORCL')]):
             ticker,row=future.result()
             if row:result[ticker]=row
     return result,{'source':'分钟线与背离结构','status':'ok' if result else 'error','count':len(result)}

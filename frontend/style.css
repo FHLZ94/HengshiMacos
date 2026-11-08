@@ -259,3 +259,8 @@ article.decision-card{position:relative;padding:0;display:block;overflow:hidden;
 .pulse-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}
 .pulse-grid .metric{min-height:196px}
 @media(max-width:650px){.pulse-grid{grid-template-columns:1fr}}
+/* Four market objects per card: two columns keep the 2x2 dashboard compact. */
+.pulse-grid .pair-values{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px 24px;align-self:center;width:100%}
+.pulse-grid .pair-values>div{display:grid;grid-template-columns:48px minmax(0,1fr);align-items:center;gap:4px}
+.pulse-grid .pair-values small{grid-column:1/-1;margin-left:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+@media(max-width:650px){.pulse-grid .pair-values{grid-template-columns:repeat(2,minmax(0,1fr));gap:10px}.pulse-grid .pair-values>div{grid-template-columns:40px minmax(0,1fr)}.pulse-grid .pair-values strong{font-size:16px}}
