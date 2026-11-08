@@ -499,7 +499,8 @@ def fetch_comparison(watchlist,config):
     symbols=[symbol for symbol in mapping.values() if symbol]
     if not symbols:return [],{'source':'TradingView 交叉核对','status':'unsupported','reason':'无可核对代码'}
     payload={'symbols':{'tickers':symbols},
-             'columns':['name','close','earnings_per_share_forecast_next_fy','price_earnings_ttm']}
+             'columns':['name','close','earnings_per_share_forecast_next_fy','price_earnings_ttm',
+                        'price_target_median','price_target_high','price_target_low']}
     try:
         response=http_post('https://scanner.tradingview.com/america/scan',json=payload,
                                headers=HEADERS,timeout=(5,15),proxies=configured_proxy(config,for_google=True))
@@ -514,6 +515,11 @@ def fetch_comparison(watchlist,config):
             if not ticker or len(values)<4:continue
             rows.append({'ticker':ticker,'price':values[1],
                          'next_fy_eps':values[2],'trailing_pe':values[3],
+                         'target_median':finite_number(values[4]) if len(values)>4 else None,
+                         'target_high':finite_number(values[5]) if len(values)>5 else None,
+                         'target_low':finite_number(values[6]) if len(values)>6 else None,
+                         'target_source':'TradingView 分析师目标价中位数',
+                         'target_url':'https://www.tradingview.com/symbols/'+entry['s'].replace(':','-')+'/forecast/',
                          'fetched_at':checked,'source':'TradingView Scanner'})
         return rows,{'source':'TradingView 交叉核对','status':'ok','count':len(rows),'checked_at':checked}
     except (requests.RequestException,ValueError,KeyError,TypeError) as exc:

@@ -84,15 +84,15 @@ class TrackingTests(unittest.TestCase):
     def test_added_security_values_update_before_news_finishes(self):
         with profile():
             api=DesktopAPI();gate=threading.Event();now=datetime.now(timezone.utc).isoformat()
-            q=quote('NVDA');e={'ticker':'NVDA','eps':5,'period':'Dec 2026 - Sep 2027','basis':'ntm_4q','fetched_at':now}
+            q={**quote('NVDA'),'reported_ttm_eps':5};e={'ticker':'NVDA','eps':5,'period':'Dec 2026 - Sep 2027','basis':'ntm_4q','fetched_at':now}
             resolved={'ok':True,'ticker':'NVDA','quote':q,'security':{'name':'NVIDIA','asset_type':'stocks','exchange':'NASDAQ','currency':'USD'}}
             def news(*args):gate.wait(2);return [],[]
-            with patch('data_service.resolve_security',return_value=resolved),patch('data_service.fetch_quotes',return_value=([q],[])),patch('data_service.fetch_estimates',return_value=([e],[])),patch('data_service.fetch_histories',return_value=([],[])),patch('data_service.fetch_comparison',return_value=([],{'source':'test','status':'error'})),patch('data_service.search_news',side_effect=news):
+            with patch('data_service.resolve_security',return_value=resolved),patch('data_service.fetch_quotes',return_value=([q],[])),patch('data_service.fetch_estimates',return_value=([e],[])),patch('data_service.fetch_histories',return_value=([],[])),patch('data_service.fetch_comparison',return_value=([{'ticker':'NVDA','target_median':150,'fetched_at':now}],{'source':'test','status':'ok'})),patch('data_service.search_news',side_effect=news):
                 self.assertTrue(api.add_tracking('NVDA')['ok'])
                 deadline=time.monotonic()+2
-                while not any(x['ticker']=='NVDA' for x in api.estimates) and time.monotonic()<deadline:time.sleep(.01)
+                while not (any(x['ticker']=='NVDA' for x in api.estimates) and any(x['ticker']=='NVDA' for x in api.comparisons)) and time.monotonic()<deadline:time.sleep(.01)
                 row=next(r for r in api.get_state()['watch'] if r['ticker']=='NVDA')
-                self.assertEqual(row['analyst_target'],150);self.assertEqual(row['ntm_pe'],20)
+                self.assertEqual(row['analyst_target'],150);self.assertEqual(row['current_pe'],20)
                 self.assertEqual(api.tracking_sync['NVDA'],'正在更新')
                 gate.set()
                 while api.tracking_sync['NVDA']=='正在更新' and time.monotonic()<deadline:time.sleep(.01)
@@ -111,7 +111,7 @@ class TrackingTests(unittest.TestCase):
             api=DesktopAPI();old=copy.deepcopy(api.settings)
             api.settings['watchlist'].append('NVDA');main.save_settings(api.settings)
             main.save_snapshot([quote('NVDA')],[])
-            with patch('data_service.fetch_session_quotes',return_value=([],{})),patch('main.fetch_quotes',return_value=([],[])),patch('data_service.fetch_histories',return_value=([],[])),patch('data_service.fetch_estimates',return_value=([],[])),patch('fund_valuation.fetch_fund_valuations',return_value=({},[])),patch('data_service.fetch_comparison',return_value=([],{})),patch('data_service.fetch_cnn_fear_greed',return_value=(None,None)),patch('data_service.fetch_sp500_breadth',return_value=(None,None)),patch('main.fetch_news',return_value=([],[])):
+            with patch('data_service.fetch_session_quotes',return_value=([],{})),patch('main.fetch_quotes',return_value=([],[])),patch('data_service.fetch_histories',return_value=([],[])),patch('data_service.fetch_estimates',return_value=([],[])),patch('fund_valuation.fetch_fund_valuations',return_value=({},[])),patch('reference_data.fetch_histories',return_value=({},[])),patch('data_service.fetch_comparison',return_value=([],{})),patch('data_service.fetch_cnn_fear_greed',return_value=(None,None)),patch('data_service.fetch_sp500_breadth',return_value=(None,None)),patch('main.fetch_news',return_value=([],[])):
                 api._refresh_worker(old)
             row=next(r for r in api.get_state()['watch'] if r['ticker']=='NVDA')
             self.assertEqual(row['price'],100)
@@ -122,12 +122,12 @@ class TrackingTests(unittest.TestCase):
         e={'eps':22.85,'basis':'ntm_4q','fetched_at':now.isoformat(),'reported_eps_ttm':9.52,
            'reported_basis':'nasdaq_earnings_surprise','reported_period':'Dec 2025 - Sep 2026'}
         r=valuation.calculate(q,e,None,now=now)
-        self.assertEqual(r['current_forward_pe'],23.65)
-        self.assertEqual(r['pe_used'],56.76)
-        self.assertEqual(r['fair_price'],1296.88)
-        self.assertIn('同源',r['pe_basis'])
-        r=valuation.calculate(q,{'eps':22.85,'basis':'ntm_4q'},None,now=now)
-        self.assertEqual(r['current_forward_pe'],23.65);self.assertIsNone(r['pe_used'])
+        self.assertIsNone(r['current_pe'])
+        self.assertIn('亏损',r['pe_status'])
+        self.assertIsNone(r['reference_price'])
+        r=valuation.calculate(q,e,{'target_median':1100,'fetched_at':now.isoformat()},now=now)
+        self.assertEqual(r['reference_price'],1100)
+        self.assertEqual(r['reference_method'],'analyst_median')
 
     def test_reported_quarters_need_four_consecutive_already_published_periods(self):
         now=datetime(2026,11,8,tzinfo=timezone.utc)

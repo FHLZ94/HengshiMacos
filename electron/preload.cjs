@@ -4,7 +4,7 @@ const {contextBridge, ipcRenderer} = require('electron');
 const methods = [
   'get_state','refresh','search_global_news','save_watchlist','add_tracking','remove_tracking','save_position',
   'delete_position','set_holding_status','save_neutral_pe','save_guidance',
-  'save_network','set_local_model','open_url','analyze_event','translate_event',
+  'save_public_posts','save_network','set_local_model','open_url','analyze_event','translate_event',
   'event_market_context','get_event_intelligence'
 ];
 const api = Object.fromEntries(methods.map(method =>

@@ -10,8 +10,8 @@ from desktop import DesktopAPI
 METHOD_ARGS = {
     'get_state': 0, 'refresh': 0, 'search_global_news': 1,
     'save_watchlist': 1, 'add_tracking': 1, 'remove_tracking': 1, 'save_position': 3, 'delete_position': 1,
-    'set_holding_status': 2, 'save_neutral_pe': 2, 'save_guidance': 3,
-    'save_network': 2, 'set_local_model': 1, 'open_url': 1,
+    'set_holding_status': 2, 'save_neutral_pe': 2, 'save_guidance': 4,
+    'save_public_posts': 1, 'save_network': 2, 'set_local_model': 1, 'open_url': 1,
     'analyze_event': 1, 'translate_event': 1,
     'event_market_context': 1, 'get_event_intelligence': 1,
 }

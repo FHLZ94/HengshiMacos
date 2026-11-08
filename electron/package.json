@@ -1,6 +1,6 @@
 {
   "name": "hengshi-desktop",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": true,
   "packageManager": "pnpm@11.19.0",
   "description": "衡势市场量化投研桌面应用",

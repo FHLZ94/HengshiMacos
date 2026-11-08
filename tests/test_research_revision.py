@@ -109,17 +109,18 @@ class ResearchRevisionTests(unittest.TestCase):
         self.assertEqual(by['SMH']['pressure'],-100)
         self.assertIn('真实资金',r['definition'])
 
-    def test_annual_historical_overlap_is_not_claimed_as_calibrated_probability(self):
+    def test_entry_zone_does_not_change_canonical_upside(self):
         h=self.history('AVGO',2200)
-        r=annual_reference(h,100,[90,100],130)
-        self.assertTrue(r['available']);self.assertFalse(r['calibrated'])
-        self.assertLess(r['independent_periods'],r['samples'])
-        self.assertEqual(r['valuation_range'],[30.0,44.4])
+        first=annual_reference(h,100,[90,100],130)
+        second=annual_reference(h,100,[70,80],130)
+        self.assertEqual(first['upside_pct'],30)
+        self.assertEqual(first['upside_pct'],second['upside_pct'])
+        self.assertEqual(first['reference_price'],130)
 
     def test_offline_refresh_recalculates_before_network_finishes(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
-            with patch.object(main,'APP_DIR',root),patch.object(main,'DB',root/'events.sqlite3'),patch.object(main,'CONFIG',root/'settings.json'),patch.object(DesktopAPI,'_scheduler',lambda s:None),patch.object(DesktopAPI,'_refresh_worker',lambda s,c:None),patch.object(DesktopAPI,'_start_translation',lambda s:None):
+            with patch.object(main,'APP_DIR',root),patch.object(main,'DB',root/'events.sqlite3'),patch.object(main,'CONFIG',root/'settings.json'),patch.object(DesktopAPI,'_scheduler',lambda s:None),patch.object(DesktopAPI,'_refresh_worker',lambda s,c:None),patch.object(DesktopAPI,'_refresh_public_async',lambda s:None),patch.object(DesktopAPI,'_start_translation',lambda s:None):
                 main.init_db()
                 h=[self.history(t,400) for t in ('QQQ','SPY','SMH','^VIX')]
                 main.save_snapshot([],[],histories=h)

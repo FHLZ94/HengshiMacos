@@ -1,42 +1,54 @@
 import unittest
-from datetime import datetime, timezone
-
+from datetime import datetime,timezone,timedelta
 from valuation import calculate
 
-
 class ValuationTests(unittest.TestCase):
-    def test_management_guidance_has_higher_weight(self):
-        now=datetime.now(timezone.utc)
-        quote={'price':100}
-        consensus={'eps':5,'basis':'ntm_4q'}
-        guidance={'eps':9,'period':'未来12个月','source_url':'https://example.com/ir','updated_at':now.isoformat()}
-        comparison={'trailing_pe':20,'fetched_at':now.isoformat()}
-        result=calculate(quote,consensus,comparison,management=guidance,now=now)
-        self.assertAlmostEqual(result['eps_used'],7.8)
-        self.assertEqual(result['fair_price'],156)
-        self.assertEqual(result['upside_pct'],56)
+    def setUp(self):
+        self.now=datetime.now(timezone.utc)
+        self.quote={'price':100,'reported_ttm_eps':5,'fetched_at':self.now.isoformat()}
+        self.comparison={'target_median':150,'target_source':'综合分析师中位数','fetched_at':self.now.isoformat()}
+        self.history={'median':20,'basis':'reported','samples':20,'years':5,'fetched_at':self.now.isoformat(),'source':'历史PE'}
+        self.guidance={'eps':9,'eps_basis':'reported','period':'未来12个月','source_url':'https://example.com/ir','updated_at':self.now.isoformat()}
 
-    def test_current_pe_without_management(self):
-        now=datetime.now(timezone.utc)
-        result=calculate({'price':116.1},{'eps':7.06,'basis':'ntm_4q'},
-                         {'trailing_pe':18.2,'fetched_at':now.isoformat()},now=now)
-        self.assertEqual(result['fair_price'],128.49)
-        self.assertEqual(result['pe_basis'],'TradingView 当前滚动市盈率不变')
+    def test_management_is_used_at_full_weight_with_matching_historical_median(self):
+        result=calculate(self.quote,{'eps':5,'basis':'ntm_4q'},self.comparison,management=self.guidance,historical_pe=self.history)
+        self.assertEqual(result['eps_used'],9)
+        self.assertEqual(result['reference_price'],180)
+        self.assertEqual(result['current_pe'],20)
+        self.assertEqual(result['upside_pct'],80)
 
-    def test_missing_source_does_not_use_management(self):
-        result=calculate({'price':100},{'eps':5,'basis':'ntm_4q'},None,
-                         management={'eps':9,'period':'未来12个月','source_url':''})
-        self.assertEqual(result['eps_used'],5)
-        self.assertIsNone(result['fair_price'])
+    def test_no_management_uses_median_and_does_not_invent_current_multiple_projection(self):
+        result=calculate(self.quote,{'eps':8,'basis':'ntm_4q'},self.comparison)
+        self.assertEqual(result['reference_price'],150)
+        self.assertEqual(result['reference_method'],'analyst_median')
 
-    def test_expired_guidance_is_not_used(self):
-        from datetime import timedelta
-        now=datetime.now(timezone.utc)
-        guidance={'eps':9,'period':'未来12个月','source_url':'https://example.com/ir',
-                  'updated_at':(now-timedelta(days=181)).isoformat()}
-        result=calculate({'price':100},{'eps':5,'basis':'ntm_4q'},
-                         {'trailing_pe':20,'fetched_at':now.isoformat()},management=guidance,now=now)
-        self.assertEqual(result['eps_used'],5)
+    def test_missing_guidance_source_falls_back_to_analyst_median(self):
+        result=calculate(self.quote,comparison=self.comparison,management={**self.guidance,'source_url':''},historical_pe=self.history)
+        self.assertEqual(result['reference_price'],150)
 
+    def test_expired_guidance_falls_back_to_median(self):
+        old={**self.guidance,'updated_at':(self.now-timedelta(days=181)).isoformat()}
+        self.assertEqual(calculate(self.quote,comparison=self.comparison,management=old,historical_pe=self.history)['reference_price'],150)
+
+    def test_adjusted_guidance_does_not_mix_with_accounting_historical_pe(self):
+        adjusted={**self.guidance,'eps_basis':'adjusted'}
+        self.assertEqual(calculate(self.quote,comparison=self.comparison,management=adjusted,historical_pe=self.history)['reference_price'],150)
+
+    def test_average_target_is_never_mislabeled_as_median(self):
+        q={**self.quote,'target_price':190}
+        result=calculate(q,{'eps':13.45,'basis':'ntm_4q'},{'trailing_pe':14.84,'fetched_at':self.now.isoformat()})
+        self.assertIsNone(result['reference_price'])
+
+    def test_firm_median_uses_latest_quote_per_firm_not_outlier_mean(self):
+        rows=[{'firm':f,'price':v,'published':self.now.isoformat()} for f,v in [('美银',100),('瑞银',120),('高盛',1000)]]
+        result=calculate(self.quote,comparison={'target_quotes':rows,'fetched_at':self.now.isoformat()})
+        self.assertEqual(result['reference_price'],120)
+        self.assertEqual(result['reference']['count'],3)
+
+    def test_loss_pe_is_not_replaced_by_forward_earnings(self):
+        result=calculate({**self.quote,'reported_ttm_eps':-2.39}, {'eps':.95,'basis':'ntm_4q'},self.comparison)
+        self.assertIsNone(result['current_pe'])
+        self.assertIn('亏损',result['pe_status'])
+        self.assertEqual(result['reference_price'],150)
 
 if __name__=='__main__':unittest.main()

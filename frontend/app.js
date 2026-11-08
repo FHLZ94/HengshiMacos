@@ -45,33 +45,33 @@ function setStatus() {
   $('#searchFeedback').textContent = state.search_status || '';
   $('#globalSearch').disabled=!!state.search_busy;
 }
-function renderPulse() {
-  const model = state.market.model;
-  if (!model?.available) {
-    $('#pulseHeadline').textContent = '正在准备市场研判';
-    $('#pulseDate').textContent = model?.reason || '正在读取本地历史并计算';
-    $('#pulseGrid').innerHTML = metric('概率参考','计算中','优先使用本机已有行情');
-    $('#pulseFoot').textContent = '首次使用需要取得有效历史行情，之后可离线计算。';
-    $('#modelMethod').textContent = model?.reason || '等待历史数据';
-    return;
+function pairMetric(label,rows,meta='',extra=''){
+  return `<div class="metric pair-metric ${extra}"><span class="label">${escapeHtml(label)}</span><div class="pair-values">${rows.map(row=>`<div><b>${escapeHtml(row.code)}</b><strong>${escapeHtml(row.value)}</strong>${row.note?`<small>${escapeHtml(row.note)}</small>`:''}</div>`).join('')}</div><span class="meta">${escapeHtml(meta)}</span></div>`;
+}
+function renderPulse(){
+  const model=state.market.model,risks=state.market.event_risk || {},environment=state.market.environment || {};
+  if(!model?.available || !model.targets){
+    $('#pulseHeadline').textContent='正在计算短线交易环境';$('#pulseDate').textContent=model?.reason || '优先读取本地历史';
+    $('#pulseGrid').innerHTML=metric('QQQ / SMH','计算中','分别训练、校准与检验');$('#pulseFoot').textContent='正在计算概率、超卖位置与事件风险。';$('#modelMethod').textContent='等待有效历史数据';return;
   }
-  const assessment=state.market.assessment || {};
-  const cnn=assessment.cnn,breadth=assessment.breadth;
-  const up=model.up5 || {},bottom=model.bottom10 || {};
-  const computed=model.computed_at ? new Date(model.computed_at).toLocaleTimeString('zh-CN',{hour12:false}) : '';
-  $('#pulseHeadline').textContent = assessment.headline || `市场情绪：${model.regime}`;
-  $('#pulseDate').textContent = `日线截至 ${model.date} · ${state.market.model_busy ? '正在重算' : `计算 ${computed}`}`;
-  $('#pulseGrid').innerHTML = [
-    metric('CNN 恐慌贪婪',cnn ? number(cnn.score,1) : '—',cnn ? `CNN · ${cnn.asof.slice(0,10)}` : '等待可用来源'),
-    metric('标普500 20日广度',breadth ? `${number(breadth.ratio_pct,1)}%` : '—',breadth ? `${breadth.above_20d}/${breadth.valid} 站上均线` : '成分行情不足'),
-    metric('承接力度',model.absorption,`量价综合观察 · ${model.date}`),
-    metric('未来5日上涨参考',`${number(model.up5_pct,1)}%`,`QQQ · ${up.method || '历史估计'}`),
-    metric('短期低点守稳参考',`${number(model.bottom10_pct,1)}%`,`未来10日 · ${bottom.method || '历史估计'}`)
+  const codes=['QQQ','SMH'],assessment=state.market.assessment || {},cnn=assessment.cnn;
+  const worst=codes.some(t=>risks[t]?.critical_negative);
+  $('#pulseHeadline').textContent=worst?'重大事件风险上升，优先核对敞口':codes.every(t=>model.targets[t].setup.oversold)?'科技与半导体进入明显超卖区，承接决定能否出手':assessment.headline || '短线情绪与交易环境';
+  $('#pulseDate').textContent=`日线截至 ${model.date} · ${state.market.model_busy?'正在重算':'计算 '+new Date(model.computed_at).toLocaleTimeString('zh-CN',{hour12:false})}`;
+  const events=risks.events || [],top=events.find(e=>Math.max(...Object.values(e.scores))>=25),matched=top&&state.news.find(n=>n.url===top.url);
+  const eventTitle=matched?.translated?matched.title:top?`${top.stage} · ${top.evidence_label}`:'近期开源情报未见高等级已核验冲击';
+  const eventCard=`<div class="metric event-pulse"><span class="label">重大事件与公开言论</span><strong class="event-risk-level">${escapeHtml(worst?'有已核验负面冲击':risks.coverage_fresh?'持续核对政策与半导体事件':'等待同步近期情报')}</strong>${top?`<button type="button" class="pulse-event-link" data-risk-url="${escapeHtml(top.url)}">${escapeHtml(eventTitle)}</button><span class="meta">${escapeHtml(top.stage)} · 影响分 ${number(Math.max(...Object.values(top.scores)),1)}/100</span>`:'<span class="meta">白宫、国会、半导体及公开帖子</span>'}</div>`;
+  $('#pulseGrid').innerHTML=[
+    pairMetric('未来1—3日加仓研判',codes.map(t=>({code:t,value:environment[t]?.label || '等待条件'})),'关注区与失效价见交易参考','action-pulse'),
+    pairMetric('未来5日上涨参考',codes.map(t=>({code:t,value:number(model.targets[t].up5_pct,1)+'%',note:model.targets[t].up5.method})),'各指数分别建模 · 基于完整日线'),
+    pairMetric('10日低点守稳参考',codes.map(t=>({code:t,value:number(model.targets[t].bottom10_pct,1)+'%'})),'未来10日守住本日低点且回升'),
+    pairMetric('超卖程度与历史位置',codes.map(t=>({code:t,value:model.targets[t].setup.label,note:`历史下侧 ${number(model.targets[t].setup.lower_tail_pct,1)}% · RSI ${number(model.targets[t].setup.rsi14,1)}`})),'波动调整后的历史分位，越低越罕见'),
+    eventCard,
+    metric('情绪与承接',model.regime,`${cnn?'CNN '+number(cnn.score,1)+' / 100 · ':''}${model.absorption}`)
   ].join('');
-  $('#pulseFoot').textContent = `${assessment.decision || ''}。${assessment.risk || ''}。`;
-  $('#pulseFoot').classList.remove('weak-validation');
-  const report=(name,item,definition) => `<div class="model-report"><strong>${escapeHtml(name)}</strong><p>${escapeHtml(definition)}</p><p>${escapeHtml(item.method || '')} · 不重叠训练样本 ${item.training_samples || 0} 组 · 时间顺序检验 ${item.validation_count || 0} 次 · Brier误差 ${number(item.brier,4)} / 历史基线 ${number(item.baseline_brier,4)}（越小越好）</p><p>${escapeHtml(item.interval_scope || '历史发生率区间')}：${item.interval ? item.interval.join('–')+'%（95%）' : '样本不足'}；该区间不等于今天真实概率的保证。</p></div>`;
-  $('#modelMethod').innerHTML = report('五日上涨',up,model.up5_definition)+report('十日低点守稳',bottom,model.bottom10_definition)+`<p>历史范围 ${escapeHtml(model.history_start)} — ${escapeHtml(model.date)}，${model.history_days} 个共同交易日。输入：${escapeHtml((model.feature_names || []).join('、'))}。使用过去训练、未来验证；未优于历史基线时收缩到基线，不人为提高概率。</p><p>${escapeHtml(model.limitations)}</p>`;
+  $('#pulseFoot').textContent=codes.map(t=>`${t}：${environment[t]?.reason || ''}`).join('。')+'。新闻改变风险评级与动作条件；未通过历史检验的消息分数不直接加减概率。';
+  const report=(ticker,name,item)=>`<div class="model-report"><strong>${ticker} · ${name}</strong><p>${escapeHtml(item.method)} · 不重叠基准样本 ${item.training_samples} 组 · 按时间检验 ${item.validation_count} 次 · 概率误差 ${number(item.brier,4)} / 基线 ${number(item.baseline_brier,4)}（越小越好）</p><p>${escapeHtml(item.interval_scope)}：${item.interval?.join('–') || '样本不足'}%（历史发生率95%区间，不是未来真实概率保证）。</p></div>`;
+  $('#modelMethod').innerHTML=codes.map(t=>report(t,'未来3日上涨',model.targets[t].up3)+report(t,'未来5日上涨',model.targets[t].up5)+report(t,'10日低点守稳',model.targets[t].bottom10)+`<details class="coefficient-report"><summary>${t} 五日模型的指标与权重</summary><p>${model.targets[t].up5.weights_active?'当前输出采用65%校准模型与35%历史基准。':'候选模型暂未提供稳定额外优势，当前输出采用100%历史基准；下列候选系数暂不用于最终概率。'}</p><table><thead><tr><th>指标</th><th>标准化系数</th><th>绝对系数占比</th></tr></thead><tbody>${model.targets[t].up5.feature_weights.map(w=>`<tr><td>${escapeHtml(w.name)}</td><td>${number(w.coefficient,4)}</td><td>${number(w.share_pct,1)}%</td></tr>`).join('')}</tbody></table><p>系数由过去训练数据拟合；占比帮助理解模型，不是因果权重，也不是概率增加的百分点。</p></details>`).join('')+`<p>${escapeHtml(model.up5_definition)}。${escapeHtml(model.bottom10_definition)}。</p><p>历史 ${model.history_start}—${model.date}，${model.history_days} 个共同交易日。${escapeHtml(model.limitations)}</p><p>${escapeHtml(risks.definition || '')}。${escapeHtml(risks.news_model_status || '')}。公开言论、议员提案与已生效政策分别处理。</p>`;
 }
 
 function renderEvents() {
@@ -179,8 +179,8 @@ function renderEventContext(context) {
   if (!context?.ok || !context.rows?.length) return '';
   return context.rows.map((row) => `<div class="event-market-row"><div><strong>${escapeHtml(row.name)} ${escapeHtml(row.ticker)}</strong><span>${escapeHtml(row.quote_day || '报价日期缺失')}</span></div>
     <div>${row.price == null ? '无报价' : `$${number(row.price)} · ${signed(row.change)}`}</div>
-    <div>${row.ntm_pe == null ? '前瞻市盈率暂无' : `未来12月市盈率 ${number(row.ntm_pe,1)} 倍`}</div>
-    <div>${row.target == null ? '一年目标价暂无' : `一年目标价 $${number(row.target)}`}</div>
+    <div>${row.current_pe == null ? escapeHtml(row.pe_status || '当前PE待数据') : `当前PE ${number(row.current_pe,1)} 倍`}</div>
+    <div>${row.target == null ? '统一参考价待数据' : `统一12月参考价 $${number(row.target)} · ${signed(row.upside_pct)}`}</div>
     <small>${escapeHtml(row.price_confirmation)}</small></div>`).join('');
 }
 async function loadEventContext(url) {
@@ -208,14 +208,12 @@ function renderMarket() {
   chart=new Chart($('#rotationChart'),{type:'bar',data:{labels:rows.map(r=>r.name),datasets:[{label:'承接 / 卖压得分',data:rows.map(r=>r.pressure),backgroundColor:rows.map(r=>r.pressure>=0?'#18a890':'#df737d'),borderRadius:4,maxBarThickness:27}]},options:{responsive:true,maintainAspectRatio:false,animation:false,indexAxis:'y',plugins:{legend:{display:false},tooltip:{callbacks:{afterLabel:ctx=>{const r=rows[ctx.dataIndex];return [`区间涨跌 ${signed(r.return_pct)}`,`相对标普 ${r.relative_pct>0?'+':''}${number(r.relative_pct)} 个百分点`,`平均成交量 / 前20日 ${number(r.volume_ratio)} 倍`];}}}},scales:{x:{min:-100,max:100,grid:{color:'#e8eef1'},ticks:{color:'#788b99'},title:{display:true,text:'卖压 ← 量价资金偏好代理 → 承接',color:'#788b99'}},y:{grid:{display:false},ticks:{color:'#38576a',font:{size:12}}}}}});
 }
 
-function annualCaption(annual) {
-  if (annual?.valuation_range) return `一年${annual.scenario_basis || "估值"}空间 ${signed(annual.valuation_range[0])}～${signed(annual.valuation_range[1])}`;
-  if (annual?.available) return `同类历史一年中位回报 ${signed(annual.median_return)}`;
-  return '一年参考待补充';
+function annualCaption(annual){
+  return annual?.reference_price ? `12月参考价 $${number(annual.reference_price)} · 空间 ${signed(annual.upside_pct)}` : '12月统一参考价待有效数据';
 }
 function renderDecisions() {
   const known=state.actions.filter(item=>item.metric).length;
-  $('#decisionStatus').textContent=`${known}个标的可评估 · 名称后为最近报价；关注区间为条件式买入研究区域，一年空间按区间买入价计算。`;
+  $('#decisionStatus').textContent=`${known}个标的可评估 · 各区域共用统一12月参考价；空间均相对当前价计算，关注区间仅作为短线入场条件。`;
   $('#decisionGrid').innerHTML=state.actions.map(item=>`<article class="decision-card ${selectedAction===item.ticker?'selected':''}">
     <button type="button" class="decision-select" data-action="${escapeHtml(item.ticker)}" aria-label="查看${escapeHtml(item.ticker)}交易参考">
       <span class="decision-card-top"><strong>${escapeHtml(item.ticker)} <span class="decision-current">${item.current_price==null?'—':'$'+number(item.current_price)}</span></strong>${item.held?'<em class="held-tag">已持有</em>':''}</span>
@@ -234,11 +232,12 @@ function renderDecisionDetail() {
   $('#decisionGrid').querySelectorAll('.decision-card').forEach(card=>card.classList.toggle('selected',card.querySelector('[data-action]')?.dataset.action===selectedAction));
   if (!item){$('#decisionDetail').innerHTML='<div class="empty-detail">选择标的查看依据</div>';return;}
   const a=item.advice,annual=item.annual;
-  const history=annual?.available ? `<p>相似月度起点的一年正收益占比 ${number(annual.historical_positive_pct,1)}%，中位回报 ${signed(annual.median_return)}，历史10%–90%分布 ${signed(annual.return_range[0])}～${signed(annual.return_range[1])}。${annual.samples}个月度起点，仅${annual.independent_periods}个不重叠年度区间，不能作为已校准的一年盈利概率。</p><p>${escapeHtml(annual.definition)}</p>` : `<p>${escapeHtml(annual?.reason || '历史不足')}</p>`;
+  const v=item.valuation || {},ref=v.reference || {};
   $('#decisionDetail').innerHTML=`<h3>${escapeHtml(item.ticker)} <span class="decision-current">${item.current_price==null?'—':'$'+number(item.current_price)}</span> · ${escapeHtml(a.action)}</h3>
-    <p class="decision-quote-time">${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_asof)}${item.regular_close ? ' · 最近收盘 $'+number(item.regular_close):''}${item.session_change_pct!=null ? ' · 较收盘 '+signed(item.session_change_pct):''}</p>
-    <div class="decision-price-row"><div><span>关注价格区间</span><strong>${a.watch_zone?'$'+number(a.watch_zone[0])+'–$'+number(a.watch_zone[1]):'待计算'}</strong></div><div><span>一年${escapeHtml(annual?.scenario_basis || "估值")}情景空间</span><strong>${annual?.valuation_range ? signed(annual.valuation_range[0])+'～'+signed(annual.valuation_range[1]):'估值数据不足'}</strong></div><div><span>风险失效价</span><strong>${a.risk_price?'$'+number(a.risk_price):'—'}</strong></div></div>
-    <div class="decision-detail-grid"><div><span>估值与盈利预期</span><p>${escapeHtml(a.valuation)}</p></div><div><span>触发条件（不是当前报价）</span><p>${escapeHtml(a.confirm)}</p></div><div><span>失效与风险</span><p>${escapeHtml(a.invalidate)}</p></div></div><details class="model-method"><summary>一年回报的历史证据与口径</summary><div>${history}<p>估值空间假设未来盈利兑现及估值倍数不变，未计费用、分红和买入区间能否到达；管理层指引影响估值情景，不直接换算胜率。</p></div></details>`;
+    <p class="decision-quote-time">${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_asof)}${item.regular_close?' · 最近收盘 $'+number(item.regular_close):''}</p>
+    <div class="decision-price-row"><div><span>短线关注区间</span><strong>${a.watch_zone?'$'+number(a.watch_zone[0])+'–$'+number(a.watch_zone[1]):'待计算'}</strong></div><div><span>统一12月参考价 / 空间</span><strong>${item.reference_price?'$'+number(item.reference_price)+' / '+signed(item.upside_pct):'待有效数据'}</strong></div><div><span>风险失效价</span><strong>${a.risk_price?'$'+number(a.risk_price):'—'}</strong></div></div>
+    <div class="decision-detail-grid"><div><span>参考价依据</span><p>${escapeHtml(v.reference_label || '')}。${escapeHtml(v.reason || '')}</p></div><div><span>短线确认条件</span><p>${escapeHtml(a.confirm)}</p></div><div><span>失效与风险</span><p>${escapeHtml(a.invalidate)}</p></div></div><p class="method-note">参考空间＝统一12月参考价÷当前价－1；与下方估值表保持一致。关注区间是价格条件，不能视为另一个目标价。</p>`;
+
 }
 
 function renderPortfolio() {
@@ -258,14 +257,7 @@ function renderPortfolio() {
     <td class="${tone(item.metric?.return5)}">${signed(item.metric?.return5)}</td><td>${escapeHtml(item.metric?.trend || '数据不足')}</td>
     <td title="${escapeHtml(item.fund_valuation?.basis)} · ${escapeHtml(item.fund_valuation?.source)}">${item.fund_valuation?.pe ? number(item.fund_valuation.pe,2)+' 倍' : '待取得估值'}<small class="price-label">${escapeHtml(item.fund_valuation?.proxy_ticker ? 'QQQ 指数代理' : item.fund_valuation?.asof || '')}</small></td>
     <td>${item.fund_valuation?.percentile!=null ? number(item.fund_valuation.percentile,1)+'%<small class="price-label">近'+number(item.fund_valuation.years,0)+'年 · '+item.fund_valuation.samples+'个月度样本</small>' : '<span class="muted">历史PE不足</span>'}</td><td class="muted">${escapeHtml(item.asof || '来源不可用')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">观察列表中暂无宽基或行业基金</td></tr>';
-  $('#watchTable tbody').innerHTML = stocks.map((item) => `<tr data-watch="${escapeHtml(item.ticker)}" class="${selectedWatch === item.ticker ? 'selected' : ''}">
-    <td title="${escapeHtml(item.name)}">${escapeHtml(item.ticker)} ${item.is_held ? '<em class="held-tag">已持有</em>' : ''} <span class="muted">${escapeHtml(item.name)}</span></td>
-    <td title="${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_source)}">${item.price == null ? '无报价' : '$' + number(item.price)}<small class="price-label">${escapeHtml(item.price_label)}${item.session_change_pct!=null?' · '+signed(item.session_change_pct):''}</small></td><td class="${tone(item.change)}">${signed(item.change)}</td>
-    <td>${number(item.valuation?.eps_used)}</td><td title="当前前瞻PE＝最近报价÷未来12个月预期EPS；情景倍数用于计算合理价。${escapeHtml(item.neutral_source)}">${item.ntm_pe == null ? '待盈利预期' : number(item.ntm_pe,1)+' 倍'}<small class="price-label">${item.neutral_pe == null ? '情景倍数待补充' : '情景 '+number(item.neutral_pe,1)+' 倍'}</small></td>
-    <td>${item.fair_price == null ? '待可比倍数' : '$' + number(item.fair_price)}</td>
-    <td class="${tone(item.upside_pct)}">${signed(item.upside_pct)}</td>
-    <td>${item.analyst_target == null ? '—' : '$' + number(item.analyst_target)}</td>
-    <td class="muted" title="${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_source)}">${escapeHtml(item.asof || '来源不可用')}</td></tr>`).join('') || '<tr><td colspan="9" class="muted">观察列表中暂无个股</td></tr>';
+  $('#watchTable tbody').innerHTML=stocks.map(item=>`<tr data-watch="${escapeHtml(item.ticker)}" class="${selectedWatch===item.ticker?'selected':''}"><td title="${escapeHtml(item.name)}">${escapeHtml(item.ticker)} ${item.is_held?'<em class="held-tag">已持有</em>':''}<span class="muted"> ${escapeHtml(item.name)}</span></td><td>$${number(item.price)}<small class="price-label">${escapeHtml(item.price_label)}</small></td><td class="${tone(item.change)}">${signed(item.change)}</td><td title="${escapeHtml(item.valuation.current_pe_source)}">${item.current_pe==null?escapeHtml(item.pe_status):number(item.current_pe,1)+' 倍'}</td><td>${item.fair_price?'$'+number(item.fair_price):'待有效数据'}</td><td class="${tone(item.upside_pct)}">${signed(item.upside_pct)}</td><td class="reference-method">${escapeHtml(item.valuation.reference_label)}</td><td>${escapeHtml(item.asof)}</td></tr>`).join('') || '<tr><td colspan="8">暂无个股跟踪</td></tr>';
   $('#positionTable tbody').innerHTML = state.portfolio.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${number(item.quantity,0)}</td><td>$${number(item.cost,3)}</td>
     <td>${item.price == null ? '无报价' : '$' + number(item.price)}</td><td>${item.value == null ? '—' : '$' + number(item.value)}</td>
     <td class="${tone(item.profit)}">${item.profit == null ? '—' : `${item.profit > 0 ? '+' : ''}$${number(item.profit)}`}</td>
@@ -279,23 +271,10 @@ function renderValuationDetail() {
   $('#fundTable tbody').querySelectorAll('tr').forEach((row) => row.classList.toggle('selected', row.dataset.watch === selectedWatch));
   if (!item) { $('#valuationDetail').innerHTML = '<div class="empty-detail">选择标的查看估值依据</div>'; return; }
   const news = state.news.filter((article) => article.tickers.includes(item.ticker)).slice(0,2);
-  const isFund=!!item.is_fund;
-  const fv=item.fund_valuation;
-  const basis = isFund ? (fv ? `当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · 估值日期 ${fv.asof}。${fv.percentile!=null ? `历史分位 ${number(fv.percentile,1)}%，在 ${fv.start} 至 ${fv.end} 的 ${fv.samples} 个月度PE样本中比较；分位越高，历史相对估值越贵。` : '该发行人报告仅提供当期PE，历史序列不足时不计算分位。'}不同来源和口径的PE不直接混用。` : '尚未取得可复核的基金PE历史，取得后显示估值分位。') :
-    item.eps_ntm == null ? '未来四季一致预期不足，暂不计算未来12月市盈率。' : `未来四季每股盈利合计 ${number(item.eps_ntm)} · ${item.eps_period} · ${item.eps_source} · 抓取 ${item.eps_asof}`;
-  const analyst = item.analyst_target == null ? '分析师一年目标价：暂无' : `分析师一年目标价 $${number(item.analyst_target)} · ${item.target_source} · 抓取 ${item.target_asof}`;
-  const average = item.one_year_pe_average == null ? `一年平均前瞻市盈率：历史快照积累中（${item.one_year_pe_samples} 个日快照）` : `一年平均前瞻市盈率：${number(item.one_year_pe_average,1)} 倍 · 本机逐日历史`;
-  const comparison = item.comparison_price == null ? '交叉核对：TradingView 暂无数据' : `TradingView 当前报价 $${number(item.comparison_price)}${item.price_gap_pct == null ? '' : ` · 与常规交易时段价差 ${number(item.price_gap_pct,2)}%`}${item.comparison_next_fy_eps == null ? '' : ` · 下一财年每股盈利预测 ${number(item.comparison_next_fy_eps)}`} · 抓取 ${item.comparison_fetched_at}${item.quote_conflict ? ' · 来源差异过大，暂停动作' : ''}`;
-  const valuation=item.valuation || {};
-  const fair=item.fair_price == null ? '当前缺少可核对的盈利或市盈率，暂不能计算情景价。' :
-    `${number(valuation.eps_used)} × ${number(valuation.pe_used,1)} 倍 = $${number(item.fair_price)}，相对最近报价 ${signed(item.upside_pct)}。盈利口径：${valuation.earnings_basis}；倍数口径：${valuation.pe_basis}。`;
-  const earningsEvidence=valuation.reported_eps_ttm!=null ? `<details class="model-method"><summary>查看同源财报EPS与估值口径</summary><p>历史四季供应商EPS合计 ${number(valuation.reported_eps_ttm)}，覆盖 ${escapeHtml(valuation.reported_period_zh || valuation.reported_period)}。${escapeHtml(valuation.pe_note)}</p>${(valuation.reported_quarters_zh || []).map(q=>`<p>${escapeHtml(q.period)}：每股盈利 ${number(q.eps)} · 披露 ${escapeHtml(q.reported)}</p>`).join('')}<button type="button" class="small-command" data-open-management="${escapeHtml(valuation.reported_source)}">核对原始财报数据</button>${valuation.accounting_ttm_eps!=null && valuation.accounting_ttm_eps<=0 ? '<p>会计口径历史盈利为负，传统滚动PE不适用；上表显示未来12个月前瞻PE，情景倍数采用明确标注的供应商财报口径。</p>' : ''}</details>` : '';
-  const guidance = valuation.management_source ? `<div>管理层指引来源：<button type="button" class="small-command" data-open-management="${escapeHtml(valuation.management_source)}">查看公司公告</button></div>` : '';
-  $('#valuationDetail').innerHTML = `<div class="valuation-layout"><div class="valuation-copy"><strong>${escapeHtml(item.ticker)} · ${escapeHtml(item.name)}</strong>
-    <div>${escapeHtml(basis)}</div>${isFund ? '' : `<div class="valuation-result">${escapeHtml(fair)}</div>${guidance}<div>${escapeHtml(average)}</div><div>${escapeHtml(analyst)}</div>${earningsEvidence}`}
-    <div>${escapeHtml(comparison)}</div>${news.length ? `<div>${escapeHtml(news.map((article) => article.title).join('；'))}</div>` : ''}</div>
-    <div class="valuation-controls"><button type="button" class="quiet-button" id="toggleHolding">${item.is_held ? '取消持有标记' : '标记为已持有'}</button>
-    ${isFund ? '' : `<button type="button" class="quiet-button" id="addGuidance"><i data-lucide="file-chart-column-increasing"></i> 管理层指引</button><form class="neutral-form" id="neutralForm"><label for="neutralPe">中性情景倍数</label><input id="neutralPe" type="number" min="0.1" max="500" step="0.1" value="${item.neutral_pe ?? ''}" placeholder="倍数" required><button type="submit" class="quiet-button">保存倍数</button></form>`}</div></div>`;
+  const isFund=!!item.is_fund,v=item.valuation || {},ref=v.reference || {},fv=item.fund_valuation;
+  const fundCopy=fv?`当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · ${fv.asof}。${fv.percentile!=null?'近'+number(fv.years,0)+'年估值分位 '+number(fv.percentile,1)+'%。':'历史PE不足，不生成分位。'}`:'尚未取得可复核的基金PE';
+  const valueCopy=item.fair_price?`统一12月参考价 $${number(item.fair_price)}，相对当前价 ${signed(item.upside_pct)}。${v.reference_method==='management_history_median' ? '管理层未来12个月EPS '+number(v.eps_used)+' × 历史PE中位数 '+number(v.pe_used,2)+' 倍。' : '采用来源发布的分析师目标价中位数。'}`:'统一12月参考价暂缺。';
+  $('#valuationDetail').innerHTML=`<div class="valuation-layout"><div class="valuation-copy"><strong>${escapeHtml(item.ticker)} · ${escapeHtml(item.name)}</strong><div>${escapeHtml(isFund?fundCopy:valueCopy)}</div>${!isFund?`<div>${escapeHtml(v.reason || '')}</div><div>价格依据：${escapeHtml(ref.source || v.reference_label)}${ref.fetched_at?' · 获取 '+new Date(ref.fetched_at).toLocaleString('zh-CN',{hour12:false}):''}</div>${ref.source_url?`<button type="button" class="small-command" data-open-management="${escapeHtml(ref.source_url)}">核对参考价来源</button>`:''}${ref.guidance_url?`<button type="button" class="small-command" data-open-management="${escapeHtml(ref.guidance_url)}">核对管理层指引</button>`:''}<p class="method-note">当前PE采用历史12个月会计盈利；亏损时不生成正PE。参考价在交易卡片、估值表与事件详情共用，不混用旧版情景价与平均目标价。</p>`:''}${news.length?`<div>${escapeHtml(news.map(n=>n.title).join('；'))}</div>`:''}</div><div class="valuation-controls"><button type="button" class="quiet-button" id="toggleHolding">${item.is_held?'取消持有标记':'标记为已持有'}</button>${!isFund?'<button type="button" class="quiet-button" id="addGuidance">管理层指引</button>':''}</div></div>`;
   icons();
 }
 
@@ -303,6 +282,7 @@ function renderSettings() {
   const proxy = $('#proxyInput');
   if (document.activeElement !== proxy) proxy.value = state.settings.https_proxy || '';
   $('#autoProxy').checked = !!state.settings.auto_local_proxy;
+  if(document.activeElement!==$('#publicPostInput'))$('#publicPostInput').value=(state.settings.public_post_urls || []).join('\n');
   if (document.activeElement !== $('#modelInput')) $('#modelInput').value=state.settings.openai_model || '';
 }
 function syncActiveTab(){
@@ -321,10 +301,12 @@ async function poll() {
   if (!window.pywebview?.api) return;
   try {
     const next = await window.pywebview.api.get_state();
-    if (next.revision !== lastRevision) {state = next;lastRevision = next.revision;render();}
+    if(next.revision!==lastRevision){if(state?.reference_key!==next.reference_key)eventContexts.clear();state=next;lastRevision=next.revision;render();}
   } catch (error) {toast('本地数据服务暂不可用');}
 }
 function bind() {
+  $('#pulseGrid').addEventListener('click',event=>{const button=event.target.closest('[data-risk-url]');if(button){const article=state.news.find(n=>n.url===button.dataset.riskUrl);if(article){selectedEvent=article.id;renderEventDetail();$('#eventDetail').scrollIntoView({block:'center',behavior:'smooth'});}}});
+  $('#savePublicPosts').addEventListener('click',async()=>{const r=await call('save_public_posts',$('#publicPostInput').value);toast(r.message);await poll();});
   $('#rotationPeriod').addEventListener('click',event=>{const button=event.target.closest('[data-period]');if(button){rotationPeriod=Number(button.dataset.period);renderMarket();icons();}});
   document.querySelectorAll('.section-nav a').forEach(link=>link.addEventListener('click',()=>{document.querySelectorAll('.section-nav a').forEach(a=>a.classList.remove('active'));link.classList.add('active');}));
   let tabScrollScheduled=false;
@@ -368,7 +350,7 @@ function bind() {
   $('#valuationDetail').addEventListener('click', async (event) => {if (event.target.id !== 'toggleHolding') return;const item=state.watch.find((row) => row.ticker === selectedWatch);if (!item) return;const result=await call('set_holding_status',selectedWatch,!item.is_held);toast(result.message || '已处理');await poll();});
   $('#valuationDetail').addEventListener('click', (event) => {if (!event.target.closest('#addGuidance')) return;$('#guidanceTicker').value=selectedWatch;$('#guidanceForm').reset();$('#guidanceTicker').value=selectedWatch;$('#guidanceDialog').showModal();});
   $('#valuationDetail').addEventListener('click', async (event) => {const button=event.target.closest('[data-open-management]');if(button)await call('open_url',button.dataset.openManagement);});
-  $('#guidanceForm').addEventListener('submit', async (event) => {event.preventDefault();const result=await call('save_guidance',$('#guidanceTicker').value,$('#guidanceEps').value,$('#guidanceUrl').value);toast(result.message || '已处理');if(result.ok)$('#guidanceDialog').close();await poll();});
+  $('#guidanceForm').addEventListener('submit', async (event) => {event.preventDefault();const result=await call('save_guidance',$('#guidanceTicker').value,$('#guidanceEps').value,$('#guidanceUrl').value,$('#guidanceBasis').value);toast(result.message || '已处理');if(result.ok)$('#guidanceDialog').close();await poll();});
   $('#editWatchlist').addEventListener('click', () => {$('#watchInput').value=state.settings.watchlist.join(', ');$('#watchDialog').showModal();});
   $('#addPosition').addEventListener('click', () => {$('#positionForm').reset();$('#positionDialog').showModal();});
   document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => $('#'+button.dataset.close).close()));

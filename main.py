@@ -16,7 +16,7 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=str(APP_DIR / 'application.log'), level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s', encoding='utf-8')
 DB = APP_DIR / 'events.sqlite3'
-APP_VERSION = '1.0.0'
+APP_VERSION = '1.1.0'
 CONFIG = APP_DIR / 'settings.json'
 ICON = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'nexus.ico'
 DEFAULT_WATCHLIST = list(securities.DEFAULT_TRACKING)
@@ -41,6 +41,8 @@ FEEDS = [
 POS = {'beats','raise','raised','upgrade','surge','growth','record','strong','accelerate','demand','订单','增长','上调','突破','创新高','扩产','合作','获批','盈利'}
 NEG = {'miss','cut','cuts','downgrade','delay','cancel','cancellation','lawsuit','probe','investigation','default','dilution','offering','selloff','warning','weak','decline','drop','暂停','取消','下调','调查','制裁','暴跌','减持','增发','融资','违约','裁员'}
 HIGH = {'halt','cancel','cancellation','default','bankruptcy','sanction','export control','war','emergency','fraud','restatement','guidance cut','订单取消','出口管制','制裁','违约','破产'}
+HIGH.update({'moratorium','ai development halt','ai pause','export ban'})
+NEG.update({'moratorium','halt','ban','restriction'})
 MED = {'earnings','guidance','capex','acquisition','merger','offering','dilution','regulation','fed','rate','cpi','就业','财报','指引','资本开支','收购','增发','利率'}
 
 
@@ -62,6 +64,7 @@ def init_db():
         con.execute("CREATE TABLE IF NOT EXISTS market_extras (name TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at TEXT NOT NULL)")
         con.execute("CREATE TABLE IF NOT EXISTS holding_flags (ticker TEXT PRIMARY KEY, updated_at TEXT NOT NULL)")
         con.execute("CREATE TABLE IF NOT EXISTS app_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+        con.execute("CREATE TABLE IF NOT EXISTS research_observations (observed_at TEXT NOT NULL, hour_key TEXT NOT NULL, ticker TEXT NOT NULL, event_key TEXT NOT NULL, payload TEXT NOT NULL, PRIMARY KEY(hour_key,ticker,event_key))")
         if not con.execute("SELECT 1 FROM app_meta WHERE key='holding_seed_v1'").fetchone():
             when=datetime.now(timezone.utc).isoformat(timespec='seconds')
             for ticker in ('ORCL','SMH','QQQM','MRVL','LITE','AVGO'):
@@ -75,6 +78,9 @@ def init_db():
             con.execute('ALTER TABLE events ADD COLUMN publisher TEXT')
         if 'independent_publishers' not in columns:
             con.execute('ALTER TABLE events ADD COLUMN independent_publishers TEXT')
+        guidance_columns={r[1] for r in con.execute('PRAGMA table_info(management_guidance)')}
+        if 'eps_basis' not in guidance_columns:
+            con.execute("ALTER TABLE management_guidance ADD COLUMN eps_basis TEXT DEFAULT 'unspecified'")
 
 
 def market_regime(quotes, news):
@@ -203,8 +209,8 @@ def load_neutral_multiples():
 def load_management_guidance():
     with sqlite3.connect(DB) as con:
         return {row[0]:{'ticker':row[0],'eps':row[1],'period':row[2],
-                        'source_url':row[3],'updated_at':row[4]}
-                for row in con.execute('SELECT ticker,eps,period,source_url,updated_at FROM management_guidance')}
+                        'source_url':row[3],'updated_at':row[4],'eps_basis':row[5]}
+                for row in con.execute('SELECT ticker,eps,period,source_url,updated_at,eps_basis FROM management_guidance')}
 
 
 def save_event_analysis(link,analysis):
@@ -233,14 +239,34 @@ def load_market_extra(name):
     return json.loads(row[0]) if row else None
 
 
-def save_management_guidance(ticker,eps,source_url):
+def save_research_observations(model,risks,quotes):
+    if not model or not model.get('available'):return
+    import hashlib
+    now=datetime.now(timezone.utc);hour=now.replace(minute=0,second=0,microsecond=0).isoformat()
+    events=risks.get('events',[])
+    identity=json.dumps([(e['url'],e['stage'],e['direction'],e['verified']) for e in events],sort_keys=True)
+    event_key=hashlib.sha256((model['date']+identity).encode()).hexdigest()[:24]
+    with sqlite3.connect(DB) as con:
+        for ticker,target in model.get('targets',{}).items():
+            quote=quotes.get(ticker) or {}
+            payload={'model_version':model.get('model_version'),'market_day':model['date'],
+                'up5_pct':target['up5_pct'],'up3_pct':target['up3_pct'],'setup':target['setup'],
+                'risk':risks.get(ticker),'sources':[e['url'] for e in events],
+                'quote_price':quote.get('price'),'quote_day':quote.get('asof'),'quote_session':quote.get('session'),
+                'endpoint':'历史概率以完整日线收盘为起点；未来新闻模型须按当时可执行时段重新匹配标签'}
+            con.execute('INSERT OR IGNORE INTO research_observations VALUES (?,?,?,?,?)',
+                        (now.isoformat(),hour,ticker,event_key,json.dumps(payload,ensure_ascii=False)))
+
+
+def save_management_guidance(ticker,eps,source_url,eps_basis='unspecified'):
     ticker=ticker.strip().upper()
     if not re.fullmatch(r'[A-Z][A-Z0-9.^-]{0,12}',ticker):raise ValueError('证券代码无效')
     if eps<=0 or eps>10000:raise ValueError('未来12个月每股盈利指引必须为正数')
     if not source_url.startswith(('https://','http://')):raise ValueError('请提供管理层原始公告链接')
+    if eps_basis not in ('reported','adjusted','unspecified'):raise ValueError('盈利口径无效')
     with sqlite3.connect(DB) as con:
-        con.execute('INSERT OR REPLACE INTO management_guidance VALUES (?,?,?,?,?)',
-                    (ticker,eps,'未来12个月',source_url,datetime.now(timezone.utc).isoformat(timespec='seconds')))
+        con.execute('INSERT OR REPLACE INTO management_guidance (ticker,eps,period,source_url,updated_at,eps_basis) VALUES (?,?,?,?,?,?)',
+                    (ticker,eps,'未来12个月',source_url,datetime.now(timezone.utc).isoformat(timespec='seconds'),eps_basis))
 
 
 def save_neutral_multiple(ticker,pe):

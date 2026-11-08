@@ -6,7 +6,7 @@ import json
 from zoneinfo import ZoneInfo
 import numpy as np
 
-MODEL_VERSION = '2.0.0'
+MODEL_VERSION = '3.0.0'
 FEATURE_NAMES = ('5日动量','20日动量','60日动量','20日均线偏离','60日均线偏离',
                  '63日回撤','相对标普强弱','半导体相对强弱','波动率水平','波动率变化',
                  '短长波动比','量比','收盘位置','下跌放量')
@@ -44,12 +44,13 @@ def _prepare(histories):
     return rows
 
 
-def _features(rows, i):
+def _features(rows, i, ticker="QQQ"):
     if i < 63: return None
-    q = np.array([r['qqq']['close'] for r in rows[i-63:i+1]], dtype=float)
+    key=ticker.lower()
+    q = np.array([r[key]['close'] for r in rows[i-63:i+1]], dtype=float)
     returns = np.diff(np.log(q)); vol = max(float(np.std(returns[-20:])), .003)
     vol60 = max(float(np.std(returns)), .003)
-    b = rows[i]['qqq']; volumes = [r['qqq']['volume'] for r in rows[i-20:i]]
+    b = rows[i][key]; volumes = [r[key]['volume'] for r in rows[i-20:i]]
     vr = b['volume']/max(float(np.mean(volumes)), 1)
     r5 = float(np.log(q[-1]/q[-6])); r20 = float(np.log(q[-1]/q[-21]))
     spy5 = np.log(rows[i]['spy']['close']/rows[i-5]['spy']['close'])
@@ -59,19 +60,20 @@ def _features(rows, i):
               np.log(q[-1]/np.mean(q[-20:]))/(vol*sqrt(20)),
               np.log(q[-1]/np.mean(q[-60:]))/(vol60*sqrt(60)),
               np.log(q[-1]/max(q))/(vol60*sqrt(63)),
-              (r5-spy5)/(vol*sqrt(5)), (smh5-r5)/(vol*sqrt(5)),
+              (r5-spy5)/(vol*sqrt(5)), (smh5-np.log(rows[i]['qqq']['close']/rows[i-5]['qqq']['close']))/(vol*sqrt(5)),
               np.log(max(rows[i]['vix'], 1)/20),
               np.log(max(rows[i]['vix'],1)/max(rows[i-5]['vix'],1)),
               vol/vol60, np.log(max(vr,.01)), pos, np.log(max(vr,.01))*min(0,returns[-1]/vol)]
     return np.clip(np.array(values, dtype=float), -8, 8)
 
 
-def _outcome(rows, i, horizon):
-    if i+horizon >= len(rows): return np.nan
-    if horizon == 5: return float(rows[i+5]['qqq']['close'] > rows[i]['qqq']['close'])
-    future = rows[i+1:i+11]
-    return float(min(r['qqq']['low'] for r in future) >= rows[i]['qqq']['low']
-                 and future[-1]['qqq']['close'] > rows[i]['qqq']['close'])
+def _outcome(rows,i,horizon,ticker='QQQ'):
+    if i+horizon>=len(rows):return np.nan
+    key=ticker.lower()
+    if horizon in (3,5):return float(rows[i+horizon][key]['close']>rows[i][key]['close'])
+    future=rows[i+1:i+horizon+1]
+    return float(min(r[key]['low'] for r in future)>=rows[i][key]['low']
+                 and future[-1][key]['close']>rows[i][key]['close'])
 
 
 def _sigmoid(x): return 1/(1+np.exp(-np.clip(x,-30,30)))
@@ -106,12 +108,12 @@ def _wilson(success, total):
 
 
 def _forecast(x, y, horizon):
-    n = len(x); raw = np.full(n, np.nan)
+    n = len(x); raw = np.full(n, np.nan);last_fit=None
     # Labels ending on the decision close are knowable; overlapping future labels
     # are purged. Each historical forecast is fitted with earlier data only.
     for origin in range(504+horizon, n, 63):
         end = origin-horizon+1; start = max(0,end-1260)
-        fit = _fit(x[start:end], y[start:end])
+        fit = _fit(x[start:end], y[start:end]);last_fit=fit
         raw[origin:origin+63] = _predict(fit, x[origin:origin+63])
     scored = []; latest = None
     anchors = sorted(set(range(504+horizon,n,horizon)) | {n-1})
@@ -161,6 +163,14 @@ def _forecast(x, y, horizon):
                      observed=round(float(np.mean([s['y'] for s in group]))*100,1))
                     for lo in range(0,100,20)
                     if (group:=[s for s in evaluation if lo<=s['p']*100<lo+20])])
+    coefficients=last_fit[2][1:] if last_fit else np.zeros(len(FEATURE_NAMES))
+    total=float(np.sum(np.abs(coefficients)))
+    latest['feature_weights']=[{'name':name,'coefficient':round(float(value),4),
+        'share_pct':round(abs(float(value))/total*100,1) if total else 0}
+        for name,value in zip(FEATURE_NAMES,coefficients)]
+    latest['weights_active']=latest['method']=='校准多因子'
+    latest['calibrated_model_weight']=.65 if latest['weights_active'] else 0
+    latest['baseline_weight']=.35 if latest['weights_active'] else 1
     return latest
 
 
@@ -175,12 +185,20 @@ def _regime(r5, gap, vix, smh5, spy5):
 def analyze_market(histories):
     rows = _prepare(histories)
     if len(rows) < 300: return dict(available=False,reason='QQQ、SPY、SMH 与 VIX 共同历史不足300日')
-    x = np.array([_features(rows,i) for i in range(63,len(rows))])
-    forecasts = {}
-    for horizon in (5,10):
-        y = np.array([_outcome(rows,i,horizon) for i in range(63,len(rows))])
-        forecasts[horizon] = _forecast(x,y,horizon)
-    up,bottom = forecasts[5],forecasts[10]
+    targets={}
+    for ticker in ('QQQ','SMH'):
+        x=np.array([_features(rows,i,ticker) for i in range(63,len(rows))])
+        predictions={}
+        for horizon in (3,5,10):
+            y=np.array([_outcome(rows,i,horizon,ticker) for i in range(63,len(rows))])
+            predictions[horizon]=_forecast(x,y,horizon)
+        setup=oversold_setup(rows,ticker,x)
+        targets[ticker]={'ticker':ticker,'date':rows[-1]['date'],
+            'up3':predictions[3],'up5':predictions[5],'bottom10':predictions[10],
+            'up3_pct':round(predictions[3]['probability']*100,1),
+            'up5_pct':round(predictions[5]['probability']*100,1),
+            'bottom10_pct':round(predictions[10]['probability']*100,1),'setup':setup}
+    up,bottom=targets['QQQ']['up5'],targets['QQQ']['bottom10']
     b = rows[-1]['qqq']; previous = rows[-2]['qqq']; day = rows[-1]['date']
     q20 = [r['qqq']['close'] for r in rows[-20:]]
     vr = b['volume']/max(np.mean([r['qqq']['volume'] for r in rows[-21:-1]]),1)
@@ -191,7 +209,7 @@ def analyze_market(histories):
     rebound = previous['close']<rows[-3]['qqq']['close'] and b['close']>previous['close']
     absorption = ('放量承接增强' if rebound and vr>=1.2 and b['close']>=b['low']+(b['high']-b['low'])*.7
                   else '反弹量能偏弱' if rebound else '未见明确承接信号')
-    return dict(available=True,model_version=MODEL_VERSION,date=day,vix_date=rows[-1]['vix_date'],
+    return dict(available=True,model_version=MODEL_VERSION,targets=targets,date=day,vix_date=rows[-1]['vix_date'],
         computed_at=datetime.now(timezone.utc).isoformat(timespec='seconds'),
         regime=label,regime_score=score,absorption=absorption,vix=round(rows[-1]['vix'],2),
         qqq_return5=round(r5,2),smh_return5=round(smh5,2),volume_ratio=round(float(vr),2),
@@ -202,7 +220,27 @@ def analyze_market(histories):
         history_start=rows[0]['date'],validation_count=up['validation_count'],
         brier=up['brier'],baseline_brier=up['baseline_brier'],
         validated_better_than_baseline=up['method']=='校准多因子',
-        up5_definition='QQQ未来第5个交易日收盘价高于最新完整交易日收盘价',
-        bottom10_definition='QQQ未来10个交易日最低价不低于本日最低价，且第10日收盘高于本日收盘；这是低点守稳事件，不是长期底部保证',
+        up5_definition='各标的未来第5个交易日收盘价高于其最新完整交易日收盘价；QQQ和SMH分别训练与检验',
+        bottom10_definition='各标的未来10个交易日最低价不低于本日最低价，且第10日收盘高于本日收盘；这是低点守稳事件，不是长期底部保证',
         feature_names=list(FEATURE_NAMES),
         limitations='日线模型每天收盘后更新输入；盘前盘后报价单独刷新。CNN和当前成分广度用于情绪解释，未伪造其历史输入。')
+
+
+
+def oversold_setup(rows,ticker,x):
+    key=ticker.lower();bars=[r[key] for r in rows];closes=np.array([b['close'] for b in bars],dtype=float)
+    changes=np.diff(closes);gains=np.maximum(changes,0);losses=np.maximum(-changes,0)
+    gain=float(np.mean(gains[:14]));loss=float(np.mean(losses[:14]))
+    for up,down in zip(gains[14:],losses[14:]):gain=(gain*13+up)/14;loss=(loss*13+down)/14
+    rsi=100-100/(1+gain/loss) if loss>0 else 100 if gain>0 else 50
+    deviations=x[:-1,3];current=float(x[-1,3])
+    rank=(float(np.sum(deviations<current))+.5*float(np.sum(deviations==current)))/len(deviations)*100
+    b=bars[-1];prior=bars[-2];vr=b['volume']/max(float(np.mean([r['volume'] for r in bars[-21:-1]])),1)
+    position=(b['close']-b['low'])/max(b['high']-b['low'],.001)
+    return {'rsi14':round(float(rsi),1),'lower_tail_pct':round(rank,1),'rank_samples':len(deviations),
+            'rank_definition':'20日均线偏离经同期波动率标准化后的历史下侧分位，越小越接近历史低位',
+            'extreme_oversold':bool(rank<=1 and rsi<35),'oversold':bool(rank<=5 and rsi<40),
+            'label':'极端超卖' if rank<=1 and rsi<35 else '明显超卖' if rank<=5 and rsi<40 else '偏超卖' if rank<=15 else '非明显超卖',
+            'volume_ratio':round(vr,2),'close_position':round(position,2),
+            'recovery_confirmed':bool(b['close']>prior['close'] and position>=.65 and vr>=1.1),
+            'return5':round(float(_pct(closes[-1],closes[-6])),2)}

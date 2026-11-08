@@ -1,66 +1,88 @@
-"""Traceable forward valuation scenarios for individual stocks."""
-from datetime import datetime, timezone, timedelta
+"""One canonical twelve-month reference per security; used by every view."""
+from datetime import datetime,timezone,timedelta
+from math import isfinite
+from statistics import median
 
 
-def fresh(value, hours=72, now=None):
+def number(value):
+    return float(value) if isinstance(value,(int,float)) and isfinite(value) else None
+
+
+def fresh(value,hours=72,now=None):
     now=now or datetime.now(timezone.utc)
     try:
         then=datetime.fromisoformat(value)
         return then.tzinfo is not None and timedelta(0)<=now-then<=timedelta(hours=hours)
-    except (TypeError,ValueError):
-        return False
+    except (TypeError,ValueError):return False
 
 
-def calculate(quote, consensus, comparison, neutral_pe=None, management=None, historical_pe=None, now=None):
-    now=now or datetime.now(timezone.utc)
-    price=quote.get('price') if quote else None
-    analyst_eps=consensus.get('eps') if consensus and consensus.get('basis')=='ntm_4q' else None
-    manager_eps=(management.get('eps') if management and management.get('period')=='未来12个月'
-                 and management.get('source_url') and fresh(management.get('updated_at'),hours=24*180,now=now)
-                 else None)
-    if analyst_eps is not None and analyst_eps<=0: analyst_eps=None
-    if manager_eps is not None and manager_eps<=0: manager_eps=None
-    if manager_eps and analyst_eps:
-        forward_eps=.7*manager_eps+.3*analyst_eps
-        earnings_basis='管理层指引 70% + 分析师未来四季预期 30%'
-    elif manager_eps:
-        forward_eps=manager_eps
-        earnings_basis='管理层未来12个月指引'
-    else:
-        forward_eps=analyst_eps
-        earnings_basis='分析师未来四季一致预期' if analyst_eps else '未来12个月盈利预期不足'
-    pe=None;pe_basis='市盈率数据不足'
-    reported_eps=(consensus.get('reported_eps_ttm') if consensus
-                  and consensus.get('reported_basis')=='nasdaq_earnings_surprise'
-                  and fresh(consensus.get('fetched_at'),now=now) else None)
-    comparable_pe=price/reported_eps if price and reported_eps and reported_eps>0 else None
-    if neutral_pe and 0<neutral_pe<=500:
-        pe=float(neutral_pe);pe_basis='用户设定中性市盈率'
-    elif historical_pe and 0<historical_pe<=500:
-        pe=float(historical_pe);pe_basis='本机过去一年平均未来市盈率'
-    elif comparable_pe and 0<comparable_pe<=500:
-        pe=float(comparable_pe);pe_basis='纳斯达克同源财报四季市盈率不变（供应商EPS口径）'
-    elif comparison and fresh(comparison.get('fetched_at'),now=now):
-        trailing=comparison.get('trailing_pe')
-        if isinstance(trailing,(int,float)) and 0<trailing<=150:
-            pe=float(trailing);pe_basis='TradingView 当前滚动市盈率不变'
-    if pe is None and quote and fresh(quote.get('fetched_at'),now=now):
-        trailing=quote.get('reported_trailing_pe')
-        if isinstance(trailing,(int,float)) and 0<trailing<=150:
-            pe=float(trailing);pe_basis='CNBC 当前滚动市盈率不变'
-    fair=round(forward_eps*pe,2) if forward_eps and pe else None
-    upside=round((fair/price-1)*100,1) if fair is not None and price and price>0 else None
-    return {'eps_used':round(forward_eps,4) if forward_eps else None,
-            'earnings_basis':earnings_basis,'management_eps':manager_eps,'analyst_eps':analyst_eps,
-            'management_source':management.get('source_url') if manager_eps else None,
-            'pe_used':round(pe,2) if pe else None,'pe_basis':pe_basis,
-            'fair_price':fair,'upside_pct':upside,
-            'current_forward_pe':round(price/forward_eps,2) if price and forward_eps else None,
-            'reported_eps_ttm':reported_eps,
-            'reported_period':consensus.get('reported_period') if consensus else None,
-            'reported_source':consensus.get('reported_source_url') if reported_eps is not None else None,
-            'reported_quarters':consensus.get('reported_quarters',[]) if consensus else [],
-            'accounting_ttm_eps':quote.get('reported_ttm_eps') if quote else None,
-            'pe_note':'财报与预测EPS采用供应商口径，可能经过调整，与会计准则滚动PE不可直接混用' if reported_eps is not None else '',
-            'method':'未来12个月每股盈利 × 市盈率不变情景',
-            'asof':now.isoformat(timespec='seconds')}
+def current_pe(quote,comparison,now):
+    quote=quote or {};comparison=comparison or {};price=number(quote.get('price'))
+    eps=number(quote.get('reported_ttm_eps'))
+    if eps is not None:
+        if eps<=0:return None,'亏损，不适用','CNBC 会计口径滚动盈利'
+        if price and price>0:return round(price/eps,2),'有效','最近报价 ÷ 会计口径历史12个月EPS'
+    pe=number(quote.get('reported_trailing_pe'))
+    if pe is not None and pe<=0:return None,'亏损，不适用','会计口径历史盈利非正'
+    if pe and fresh(quote.get('fetched_at'),hours=24*14,now=now):
+        close=number(quote.get('regular_close')) or price
+        return round(pe*price/close,2) if price and close else pe,'有效','CNBC 当前滚动PE'
+    pe=number(comparison.get('trailing_pe'))
+    if pe and pe>0 and fresh(comparison.get('fetched_at'),hours=24*14,now=now):
+        base=number(comparison.get('price'))
+        return round(pe*price/base,2) if price and base else pe,'有效','TradingView 当前滚动PE'
+    return None,'待有效数据','当前滚动PE来源暂缺'
+
+
+def analyst_reference(quote,comparison,now):
+    for source in (comparison or {},quote or {}):
+        rows=source.get('target_quotes') or [];latest={}
+        for row in rows:
+            value=number(row.get('price'));firm=str(row.get('firm') or '').strip()
+            if value and value>0 and firm and fresh(row.get('published'),24*180,now):
+                if firm not in latest or row['published']>latest[firm]['published']:latest[firm]=row
+        if len(latest)>=3:
+            return round(median(r['price'] for r in latest.values()),2),{'method':'analyst_median',
+                'label':'分析师目标价中位数','source':source.get('target_source') or source.get('source',''),
+                'source_url':source.get('target_url'),'fetched_at':source.get('fetched_at'),
+                'count':len(latest),'quotes':list(latest.values())}
+        value=number(source.get('target_median'))
+        if value and value>0 and fresh(source.get('fetched_at'),24*14,now):
+            return round(value,2),{'method':'analyst_median','label':'分析师目标价中位数',
+                'source':source.get('target_source') or 'TradingView 分析师综合预测',
+                'source_url':source.get('target_url'),'fetched_at':source.get('fetched_at'),
+                'count':source.get('target_count'),'quotes':[]}
+    return None,{'method':'unavailable','label':'等待分析师中位数','source':'','quotes':[]}
+
+
+def calculate(quote,consensus=None,comparison=None,neutral_pe=None,management=None,historical_pe=None,now=None):
+    now=now or datetime.now(timezone.utc);quote=quote or {};price=number(quote.get('price'))
+    pe,status,pe_source=current_pe(quote,comparison,now)
+    target,reference=analyst_reference(quote,comparison,now)
+    history=historical_pe if isinstance(historical_pe,dict) else {}
+    guidance=management or {};eps=number(guidance.get('eps'));history_median=number(history.get('median'))
+    valid_guidance=(eps and eps>0 and guidance.get('period')=='未来12个月' and guidance.get('source_url')
+                    and fresh(guidance.get('updated_at'),24*180,now))
+    matching=(guidance.get('eps_basis') in ('reported','adjusted') and guidance.get('eps_basis')==history.get('basis'))
+    valid_history=(history_median and history_median>0 and history.get('samples',0)>=12
+                   and history.get('years',0)>=3 and fresh(history.get('fetched_at'),24*30,now))
+    reason=''
+    if valid_guidance and valid_history and matching:
+        target=round(eps*history_median,2)
+        reference={'method':'management_history_median','label':'管理层指引 × 历史PE中位数',
+            'source':history.get('source'),'source_url':history.get('source_url'),
+            'guidance_url':guidance['source_url'],'fetched_at':history.get('fetched_at'),
+            'history_samples':history['samples'],'history_years':history['years'],'quotes':[]}
+    elif valid_guidance:
+        reason='管理层指引与可用历史PE缺少一致口径，采用分析师中位数' if not matching else '历史PE样本不足，采用分析师中位数'
+    else:reason='缺少明确覆盖未来12个月的管理层EPS指引，采用分析师中位数'
+    if target is None:reason+='；中位数尚未取得，保留空缺'
+    upside=round((target/price-1)*100,1) if target and price and price>0 else None
+    return {'current_pe':pe,'pe_status':status,'current_pe_source':pe_source,
+            'reference_price':target,'fair_price':target,'upside_pct':upside,'reference':reference,
+            'reference_method':reference['method'],'reference_label':reference['label'],'reason':reason,
+            'pe_used':round(history_median,2) if reference['method']=='management_history_median' else None,
+            'pe_basis':reference['label'],'eps_used':eps if reference['method']=='management_history_median' else None,
+            'management_eps':eps if valid_guidance else None,'management_source':guidance.get('source_url') if valid_guidance else None,
+            'historical_median':history_median,'historical_pe':history,
+            'method':reference['label'],'asof':now.isoformat(timespec='seconds')}

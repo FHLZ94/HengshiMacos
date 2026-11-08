@@ -19,7 +19,7 @@ MATERIAL_TERMS = {
                'lease cancellation', 'order cancellation', 'cancellation report',
                'shelved expansion', 'still on track'),
     '业绩预期': ('guidance', 'earnings', 'revenue forecast', 'margin forecast', 'profit warning'),
-    '政策监管': ('export controls', 'sanction', 'tariff', 'regulation', 'antitrust'),
+    '政策监管': ('export controls', 'sanction', 'tariff', 'regulation', 'antitrust','moratorium','ai pause','halt ai','executive order'),
     '资本开支': ('capital expenditure', 'capex', 'data center spending', 'ai spending'),
     '股权交易': ('shares acquired', 'shares purchased', 'shares bought', 'stake increased',
                'bought shares', 'purchased shares'),

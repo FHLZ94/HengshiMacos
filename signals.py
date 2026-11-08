@@ -81,14 +81,14 @@ def scenario(metric, held=False, negative_event=False, fair_price=None, analyst_
         basis=f'最近报价已低于风险失效价 {risk:.2f}，原关注区间需要重新评估'
     elif cheap and near_support and reversal:
         action='分批买入候选' if not held else '分批加仓候选'
-        basis=f'至中性估值参考空间 {fair_gap:.0f}%，接近20日低位且出现量价修复'
+        basis=f'至统一参考价空间 {fair_gap:.0f}%，接近20日低位且出现量价修复'
     elif (cheap or target_discount) and near_support and reversal:
         action='分批买入候选' if not held else '分批加仓候选'
-        reason=f'至中性估值参考空间 {fair_gap:.0f}%' if cheap else f'至分析师一年目标价空间 {target_gap:.0f}%'
+        reason=f'至统一参考价空间 {fair_gap:.0f}%' if cheap else f'至分析师一年目标价空间 {target_gap:.0f}%'
         basis=f'{reason}，进入低位区并出现收盘修复；须等待确认价'
     elif (cheap or target_discount) and near_support:
         action='重点关注'
-        reason=f'至中性估值参考空间 {fair_gap:.0f}%' if cheap else f'至分析师一年目标价空间 {target_gap:.0f}%'
+        reason=f'至统一参考价空间 {fair_gap:.0f}%' if cheap else f'至分析师一年目标价空间 {target_gap:.0f}%'
         basis=f'{reason}，价格进入20日低位区，等待承接确认'
     elif metric['trend']=='上行' and metric['volume_ratio']>=1.2 and (fair_gap is None or fair_gap>=-5):
         action='回撤买入候选' if not held else '持有，回撤加仓候选'
@@ -102,8 +102,8 @@ def scenario(metric, held=False, negative_event=False, fair_price=None, analyst_
     else:
         action='持有观察' if held else '关注回撤价位'
         basis=f'当前价 {price:.2f}，距离20日低位区较远；短期趋势{metric["trend"]}'
-    valuation=(f'中性估值合理价 {fair_price:.2f}，相对当前价 {fair_gap:+.0f}%'
-               if fair_gap is not None else '中性估值尚未设定')
+    valuation=(f'统一12月参考价 {fair_price:.2f}，相对当前价 {fair_gap:+.0f}%'
+               if fair_gap is not None else '统一12月参考价待数据')
     if target_gap is not None:
         valuation+=f'；分析师一年目标价 {analyst_target:.2f}，相对当前价 {target_gap:+.0f}%'
     if negative_event:

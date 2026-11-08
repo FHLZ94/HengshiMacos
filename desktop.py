@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 import copy
+import hashlib
+import json
 import logging
 import os
 import re
@@ -23,6 +25,9 @@ from investment_reference import annual_reference
 import valuation
 import event_intelligence
 import securities
+import reference_data
+import event_risk
+import public_intelligence
 from signals import analyze_history, flow_proxy, scenario
 from translation_service import TranslationStore
 
@@ -162,16 +167,20 @@ class DesktopAPI:
         self.fear_greed=main.load_market_extra('cnn_fear_greed')
         self.sp500_breadth=main.load_market_extra('sp500_breadth')
         self.fund_valuations=main.load_market_extra('fund_valuations') or {}
+        self.pe_histories=main.load_market_extra('historical_pe_medians') or {}
         cached_model=main.load_market_extra('market_model_v2') or {}
         self._model_key=cached_model.get('input_key')
         self._model_result=cached_model if cached_model.get('model_version')==market_model.MODEL_VERSION else None
         self.model_busy=False
         self.model_pending=False
         self._annual_cache={}
+        self._observation_key=None
         self.tracking_sync={}
         self.adding_tickers=set()
         self.busy=False
         self.quote_busy=False
+        self.public_busy=False
+        self.last_public_check=0
         self.search_busy=False
         self.search_status=''
         self.search_result_count=0
@@ -204,6 +213,22 @@ class DesktopAPI:
             if time.monotonic()-last_full>=seconds:
                 self.refresh();last_full=time.monotonic()
             else:self._refresh_session_async()
+            if time.monotonic()-self.last_public_check>=120:self._refresh_public_async()
+
+    def _refresh_public_async(self):
+        with self.lock:
+            if self.public_busy:return
+            self.public_busy=True;config=copy.deepcopy(self.settings)
+        def apply(rows):
+            main.save_events(rows)
+            with self.lock:self.news=merge_news(self.news,rows);self.revision+=1
+            self._start_translation();self._start_priority_analysis()
+        def work():
+            try:public_intelligence.fetch_public(config,main.sentiment_score,main.impact_level,apply)
+            except Exception:logging.exception('Public intelligence refresh failed')
+            finally:
+                with self.lock:self.public_busy=False;self.last_public_check=time.monotonic();self.revision+=1
+        threading.Thread(target=work,daemon=True).start()
 
     def _refresh_session_async(self):
         with self.lock:
@@ -225,12 +250,14 @@ class DesktopAPI:
 
     def refresh(self):
         self._start_model(force=True)
+        self._refresh_public_async()
         with self.lock:
             if self.busy:return {'ok':True,'message':'已重新计算本地行情，网络同步正在进行'}
             self.busy=True;self.status='正在更新行情与研判';self.revision+=1
             config=copy.deepcopy(self.settings)
             config['_quote_tickers']=self._quote_tickers()
             config['_history_tickers']=self._history_tickers()
+            config['_pe_cached']=copy.deepcopy(self.pe_histories)
         threading.Thread(target=self._refresh_worker,args=(config,),daemon=True).start()
         return {'ok':True,'message':'已重新计算本地行情，并开始同步新数据'}
 
@@ -265,13 +292,14 @@ class DesktopAPI:
         try:
             # Apply each completed group immediately. Slow or blocked RSS cannot
             # hold back quotes, historical inputs or an offline model recalculation.
-            with ThreadPoolExecutor(max_workers=9) as pool:
+            with ThreadPoolExecutor(max_workers=10) as pool:
                 jobs={pool.submit(data_service.fetch_session_quotes,config.get('_quote_tickers',config['watchlist']),config):'sessions',
                       pool.submit(main.fetch_quotes,config.get('_quote_tickers',config['watchlist']),config):'quotes',
                       pool.submit(data_service.fetch_histories,config.get('_history_tickers',config['watchlist']+list(HISTORY_EXTRA)),config):'histories',
                       pool.submit(data_service.fetch_estimates,config['watchlist'],config):'estimates',
                       pool.submit(fund_valuation.fetch_fund_valuations,config):'funds',
                       pool.submit(data_service.fetch_comparison,config['watchlist'],config):'comparisons',
+                      pool.submit(reference_data.fetch_histories,config['watchlist'],config):'pe_history',
                       pool.submit(data_service.fetch_cnn_fear_greed,config):'cnn',
                       pool.submit(data_service.fetch_sp500_breadth,config):'breadth',
                       pool.submit(main.fetch_news,config['watchlist'],config):'news'}
@@ -299,15 +327,18 @@ class DesktopAPI:
                         elif kind=='news' and rows:
                             with self.lock:self.news=merge_news(self.news,rows);self.revision+=1
                             self._start_translation();self._start_priority_analysis()
-                        elif kind in ('cnn','breadth','funds') and rows:
-                            name={'cnn':'cnn_fear_greed','breadth':'sp500_breadth','funds':'fund_valuations'}[kind]
+                        elif kind in ('cnn','breadth','funds','pe_history') and rows:
+                            name={'cnn':'cnn_fear_greed','breadth':'sp500_breadth','funds':'fund_valuations','pe_history':'historical_pe_medians'}[kind]
                             if kind=='funds':
                                 with self.lock:rows={**self.fund_valuations,**rows}
+                            if kind=='pe_history':
+                                with self.lock:rows={**self.pe_histories,**rows}
                             main.save_market_extra(name,rows)
                             with self.lock:
                                 if kind=='cnn':self.fear_greed=rows
                                 elif kind=='breadth':self.sp500_breadth=rows
-                                else:self.fund_valuations=rows
+                                elif kind=='funds':self.fund_valuations=rows
+                                else:self.pe_histories=rows
                                 self.revision+=1
                     except Exception:
                         logging.exception('Refresh group failed: %s',kind)
@@ -451,6 +482,7 @@ class DesktopAPI:
             cnn=copy.deepcopy(self.fear_greed)
             breadth=copy.deepcopy(self.sp500_breadth)
             fund_values=copy.deepcopy(self.fund_valuations)
+            pe_histories=copy.deepcopy(self.pe_histories)
             model_result=copy.deepcopy(self._model_result)
             model_busy=self.model_busy
             health=copy.deepcopy(self.health);watchlist=list(self.settings['watchlist'])
@@ -512,10 +544,10 @@ class DesktopAPI:
             price_gap=current_price_gap(q,comparison)
             conflict=price_gap is not None and abs(price_gap)>2.5
             is_fund=securities.is_fund(ticker,security_config) or ticker.startswith('^')
-            calculated=valuation.calculate(q,e,comparison,neutral.get(ticker),management.get(ticker),average)
+            calculated=valuation.calculate(q,e,comparison,management=management.get(ticker),historical_pe=pe_histories.get(ticker))
             if is_fund: calculated=valuation.calculate(q,None,None)
-            calculated['reported_period_zh']=chinese_period(calculated.get('reported_period'))
-            calculated['reported_quarters_zh']=[{**item,'period':chinese_period(item['period'])} for item in calculated.get('reported_quarters',[])]
+            if is_fund:
+                calculated.update(reference_price=None,fair_price=None,upside_pct=None)
             company=COMPANY_NAMES.get(ticker) or metadata.get(ticker,{}).get('name_zh') or translated.get(metadata.get(ticker,{}).get('name','')) or metadata.get(ticker,{}).get('name') or '自选标的'
             watch.append({'ticker':ticker,'name':company,'is_fund':is_fund,
                 'price':price,'change':q['change'] if q else None,'asof':trade_date(q.get('asof')) if q else '',
@@ -534,6 +566,7 @@ class DesktopAPI:
                 'upside_pct':calculated['upside_pct'],
                 'neutral_source':calculated['pe_basis'],
                 'valuation':calculated,
+                'current_pe':calculated['current_pe'],'pe_status':calculated['pe_status'],
                 'one_year_pe_average':average,
                 'one_year_pe_samples':one_year.get(ticker,{}).get('samples',0),
                 'comparison_price':comparison.get('price') if comparison else None,
@@ -541,9 +574,9 @@ class DesktopAPI:
                 'comparison_fetched_at':local_time(comparison.get('fetched_at')) if comparison else '',
                 'price_gap_pct':round(price_gap,2) if price_gap is not None else None,
                 'quote_conflict':conflict,
-                'analyst_target':q.get('target_price') if q else None,
-                'target_source':'纳斯达克分析师一年目标价' if q and q.get('target_price') else '',
-                'target_asof':local_time(q.get('target_fetched_at')) if q and q.get('target_price') else '',
+                'analyst_target':calculated['reference_price'],
+                'target_source':calculated['reference_label'],
+                'target_asof':local_time(calculated['reference'].get('fetched_at')),
                 'is_held':ticker in held,'metric':metrics.get(ticker)})
             if ticker.startswith('^'):continue
             metric=metrics.get(ticker)
@@ -551,13 +584,13 @@ class DesktopAPI:
             comparison=comparison_map.get(ticker)
             gap=current_price_gap(q,comparison)
             average=one_year.get(ticker,{}).get('average')
-            fair=valuation.calculate(q,e,comparison,neutral.get(ticker),management.get(ticker),average)['fair_price']
+            fair=calculated['reference_price']
             action_metric={**metric,'price':q['price']} if metric and q else metric
             advice=scenario(action_metric,ticker in held,recent_negative(news,ticker),fair,
-                            q.get('target_price') if q else None,data_conflict=gap is not None and abs(gap)>2.5)
+                            None,data_conflict=gap is not None and abs(gap)>2.5)
             annual_key=(ticker,history_map.get(ticker,{}).get('fetched_at'),q.get('price') if q else None,fair,q.get('target_price') if q else None)
             if annual_key not in self._annual_cache:
-                self._annual_cache[annual_key]=annual_reference(history_map.get(ticker),q.get('price') if q else None,advice.get('watch_zone'),fair,q.get('target_price') if q else None)
+                self._annual_cache[annual_key]=annual_reference(history_map.get(ticker),q.get('price') if q else None,advice.get('watch_zone'),fair)
                 if len(self._annual_cache)>200:self._annual_cache={annual_key:self._annual_cache[annual_key]}
             actions.append({'ticker':ticker,'name':company,'held':ticker in held,'metric':metric,
                             'sync_status':tracking_sync.get(ticker,''),
@@ -567,6 +600,7 @@ class DesktopAPI:
                             'regular_close':q.get('regular_close') if q else None,
                             'session_change_pct':q.get('session_change_pct') if q else None,
                             'annual':self._annual_cache[annual_key],
+                            'valuation':calculated,'reference_price':fair,'upside_pct':calculated['upside_pct'],
                             'flow':flow_proxy(metric),'advice':advice})
         portfolio=[]
         for position in positions:
@@ -576,19 +610,28 @@ class DesktopAPI:
         market=main.market_regime(quotes,news)
         series={ticker:history_map[ticker]['bars'][-30:] for ticker in ('QQQ','SMH','SPY') if ticker in history_map}
         market_assessment=market_view.compose(model_result,cnn,breadth)
+        risks=event_risk.assess_events(news,analyses)
+        live_metrics={t:{**m,'live_price':quote_map.get(t,{}).get('price')} for t,m in metrics.items()}
+        environment=event_risk.trading_environment(model_result,risks,live_metrics)
+        observation_key=(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H'),(model_result or {}).get('date'),
+                         tuple((e['url'],e['stage'],e['direction'],e['verified']) for e in risks['events']))
+        if observation_key!=self._observation_key:
+            main.save_research_observations(model_result,risks,quote_map);self._observation_key=observation_key
+        reference_key=hashlib.sha256(json.dumps([(w['ticker'],w['price'],w['fair_price'],w['valuation']['reference_method']) for w in watch]).encode()).hexdigest()[:16]
         return {'revision':revision,'status':status,'busy':busy,'last_sync':last_sync,
                 'search_busy':search_busy,'search_status':search_status,'search_result_count':search_result_count,
                 'search_query':search_query,
-                'news':public_news,'watch':watch,'portfolio':portfolio,'actions':actions,
+                'news':public_news,'watch':watch,'portfolio':portfolio,'actions':actions,'reference_key':reference_key,
                 'market':{'label':market['label'],'score':market['score'],'up':market['up'],'down':market['down'],
                           'vix':quote_map.get('^VIX'),'qqq':metrics.get('QQQ'),'smh':metrics.get('SMH'),
                           'spy':metrics.get('SPY'),'series':series,'model':model_result,'model_busy':model_busy,
                           'rotation':{'5':sector_rotation.rotation(histories,5),'20':sector_rotation.rotation(histories,20)},
-                          'assessment':market_assessment},
+                          'assessment':market_assessment,'event_risk':risks,'environment':environment},
                 'health':[{'source':source_name(h['source']),'status':'正常' if h['status']=='ok' else health_reason(h.get('reason') or h['status']),
                            'count':h.get('count'),'checked':local_time(h.get('checked_at'))} for h in health],
                 'settings':{'watchlist':watchlist,'auto_local_proxy':self.settings.get('auto_local_proxy',True),
-                            'https_proxy':proxy,'openai_model':self.settings.get('openai_model','qwen3:4b')},
+                            'https_proxy':proxy,'openai_model':self.settings.get('openai_model','qwen3:4b'),
+                            'public_post_urls':security_config.get('public_post_urls',[])},
                 'translation_pending':sum(not item['translated'] for item in public_news)}
 
     def save_watchlist(self,raw):
@@ -722,13 +765,13 @@ class DesktopAPI:
         with self.lock:self.neutral=main.load_neutral_multiples();self.revision+=1
         return {'ok':True,'message':'中性估值倍数已保存'}
 
-    def save_guidance(self,ticker,eps,source_url):
-        try:main.save_management_guidance(ticker,float(eps),source_url.strip())
+    def save_guidance(self,ticker,eps,source_url,eps_basis='unspecified'):
+        try:main.save_management_guidance(ticker,float(eps),source_url.strip(),eps_basis)
         except (ValueError,TypeError,AttributeError) as exc:return {'ok':False,'message':str(exc)}
         with self.lock:
             self.management=main.load_management_guidance()
             self.revision+=1
-        return {'ok':True,'message':'管理层指引已保存，按70%权重参与估值'}
+        return {'ok':True,'message':'指引已保存；历史PE口径一致时优先计算，否则采用分析师中位数'}
 
     def save_network(self,proxy,auto):
         if proxy and not re.fullmatch(r'https?://[^\s]+',str(proxy)):
@@ -747,6 +790,14 @@ class DesktopAPI:
             main.save_settings(self.settings)
             self.revision+=1
         return {'ok':True,'message':'本地模型已保存'}
+
+    def save_public_posts(self,raw):
+        try:urls=public_intelligence.validate_posts(raw)
+        except ValueError as error:return {'ok':False,'message':str(error)}
+        with self.lock:
+            updated={**self.settings,'public_post_urls':urls};main.save_settings(updated);self.settings=updated;self.revision+=1
+        self._refresh_public_async()
+        return {'ok':True,'message':'公开帖子已保存，正在与权威媒体和官方信息一起核对'}
 
     def open_url(self,url):
         if not isinstance(url,str) or not url.startswith(('https://','http://')):
@@ -786,12 +837,14 @@ class DesktopAPI:
     def event_market_context(self,event_url):
         with self.lock:
             cached=self.event_context_cache.get(event_url)
-            if cached and time.time()-cached[0]<900:
-                return cached[1]
+            if cached and time.time()-cached[0]<900 and len(cached)==3 and cached[1]==self.revision:
+                return cached[2]
             article=next((row for row in self.news if row['link']==event_url),None)
             config=copy.deepcopy(self.settings)
             existing_quotes={row['ticker']:row for row in self.quotes}
             existing_estimates={row['ticker']:row for row in self.estimates}
+            comparisons={row['ticker']:row for row in self.comparisons}
+            managers=copy.deepcopy(self.management);histories=copy.deepcopy(self.pe_histories)
         if article is None:return {'ok':False,'message':'事件已更新'}
         tickers=[ticker for ticker in article['tickers'] if not ticker.startswith('^')][:3]
         if not tickers:return {'ok':True,'rows':[]}
@@ -810,6 +863,8 @@ class DesktopAPI:
         for ticker in tickers:
             quote_row=existing_quotes.get(ticker)
             estimate=existing_estimates.get(ticker)
+            reference=valuation.calculate(quote_row,estimate,comparisons.get(ticker),management=managers.get(ticker),historical_pe=histories.get(ticker))
+            if securities.is_fund(ticker,config):reference.update(reference_price=None,upside_pct=None)
             quote_day=trade_date(quote_row.get('asof')) if quote_row else ''
             try:
                 event_day=datetime.fromisoformat(article['published']).astimezone(LOCAL_TZ).date().isoformat()
@@ -820,11 +875,12 @@ class DesktopAPI:
                          'change':quote_row.get('change') if quote_row else None,
                          'quote_day':quote_day,
                          'eps_ntm':estimate.get('eps') if estimate else None,
-                         'ntm_pe':quote_row['price']/estimate['eps'] if quote_row and estimate and estimate.get('eps',0)>0 else None,
-                         'target':quote_row.get('target_price') if quote_row else None,
+                         'current_pe':reference['current_pe'],'pe_status':reference['pe_status'],
+                         'target':reference['reference_price'],'upside_pct':reference['upside_pct'],
+                         'reference_label':reference['reference_label'],
                          'price_confirmation':'事件后尚无可用收盘数据' if event_day and quote_day and quote_day<event_day else '日涨跌仅供参考，不能单独归因于事件'})
         result={'ok':True,'rows':rows}
-        with self.lock:self.event_context_cache[event_url]=(time.time(),result)
+        with self.lock:self.event_context_cache[event_url]=(time.time(),self.revision,result)
         return result
 
 
