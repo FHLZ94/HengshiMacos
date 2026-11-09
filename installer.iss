@@ -1,5 +1,5 @@
 #define MyAppName "衡势"
-#define MyAppVersion "1.3.0"
+#define MyAppVersion "1.3.1"
 #define MyAppPublisher "范光旭"
 #define MyAppExeName "衡势.exe"
 

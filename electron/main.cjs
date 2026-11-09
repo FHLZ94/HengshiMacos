@@ -15,6 +15,7 @@ const METHODS = new Set([
 let backend = null;
 let backendPort = null;
 const token = randomBytes(32).toString('hex');
+const BACKEND_START_TIMEOUT_MS = 120000;
 
 const frontend = () => app.isPackaged
   ? path.join(process.resourcesPath,'frontend','index.html')
@@ -23,7 +24,7 @@ const frontend = () => app.isPackaged
 function startBackend() {
   return new Promise((resolve,reject) => {
     const executable = app.isPackaged
-      ? path.join(process.resourcesPath,'backend','hengshi-backend')
+      ? path.join(process.resourcesPath,'backend','hengshi-backend',process.platform==='win32'?'hengshi-backend.exe':'hengshi-backend')
       : path.resolve(__dirname,'..','.venv','Scripts','python.exe');
     const args = app.isPackaged ? [] : [path.resolve(__dirname,'..','electron_backend.py')];
     if (!fs.existsSync(executable)) return reject(new Error('本地数据服务缺失'));
@@ -33,30 +34,60 @@ function startBackend() {
       stdio:['ignore','pipe','pipe'],windowsHide:true
     });
     let ready = false;
+    let settled = false;
     let output = '';
-    const timeout = setTimeout(() => {if (!ready) reject(new Error('本地数据服务启动超时'));},30000);
-    backend.once('error',error => {clearTimeout(timeout);reject(error);});
-    backend.once('exit',() => {if (!ready){clearTimeout(timeout);reject(new Error('本地数据服务启动失败'));}});
+    const stdoutTail=[];
+    const log = path.join(app.getPath('userData'),'backend.log');
+    const finish = error => {
+      if (settled)return;
+      settled=true;clearTimeout(timeout);
+      if (error)reject(error);else resolve();
+    };
+    const timeout = setTimeout(() => {
+      if (!ready && backend && !backend.killed)backend.kill('SIGKILL');
+      finish(new Error(`本地数据服务在 ${BACKEND_START_TIMEOUT_MS/1000} 秒内未就绪。最后输出：${[...stdoutTail,output].filter(Boolean).join(' | ').slice(-1200) || '无启动输出'}。诊断日志：${log}`));
+    },BACKEND_START_TIMEOUT_MS);
+    backend.once('error',error => finish(new Error(`本地数据服务进程无法启动：${error.message}。诊断日志：${log}`)));
+    backend.once('exit',(code,signal) => {
+      if (!ready)finish(new Error(`本地数据服务提前退出（${signal || `退出码 ${code}`}）。诊断日志：${log}`));
+    });
     backend.stdout.on('data',chunk => {
       output += chunk.toString('utf8');
-      const newline = output.indexOf('\n');
-      if (newline<0 || ready) return;
-      const line = output.slice(0,newline);
-      output = output.slice(newline+1);
-      try {
-        const port = JSON.parse(line).port;
-        if (!Number.isInteger(port) || port<1024 || port>65535) throw new Error('服务端口无效');
-        backendPort = port;
-        ready = true;
-        clearTimeout(timeout);
-        resolve();
-      } catch (error) {clearTimeout(timeout);reject(error);}
+      const lines=output.split(/\r?\n/);output=lines.pop();
+      for (const line of lines) {
+        if (ready || settled)break;
+        try {
+          const message=JSON.parse(line);
+          const port=message.port;
+          if (!Number.isInteger(port) || port<1024 || port>65535)throw new Error('服务端口无效');
+          backendPort=port;ready=true;
+          probeBackend(port).then(()=>finish(),error=>finish(error));
+        } catch (error) {
+          stdoutTail.push(line.slice(0,500));if(stdoutTail.length>12)stdoutTail.shift();
+          fs.appendFile(log,`stdout: ${line}\n`,()=>{});
+        }
+      }
     });
     backend.stderr.on('data',chunk => {
-      const log = path.join(app.getPath('userData'),'backend.log');
       fs.appendFile(log,chunk.toString('utf8'),() => {});
     });
   });
+}
+
+async function probeBackend(port) {
+  let lastError=null;
+  for (let attempt=0;attempt<12;attempt++) {
+    try {
+      const response=await fetch(`http://127.0.0.1:${port}/health`,{
+        headers:{'X-Hengshi-Token':token},signal:AbortSignal.timeout(5000)
+      });
+      if(!response.ok)throw new Error(`HTTP ${response.status}`);
+      const result=await response.json();
+      if(result.ok===true)return;
+      throw new Error('健康检查响应无效');
+    } catch(error) {lastError=error;await new Promise(resolve=>setTimeout(resolve,500));}
+  }
+  throw new Error(`本地数据服务已启动但健康检查失败：${lastError?.message || '未知错误'}。诊断日志：${path.join(app.getPath('userData'),'backend.log')}`);
 }
 
 function createWindow() {

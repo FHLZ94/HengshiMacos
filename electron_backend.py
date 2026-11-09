@@ -22,6 +22,18 @@ def serve(api=None, token=None):
     token = token or os.environ.get('HENGSHI_IPC_TOKEN') or secrets.token_hex(32)
 
     class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path!='/health' or self.headers.get('X-Hengshi-Token')!=token:
+                self.send_error(403)
+                return
+            encoded=b'{"ok":true}'
+            self.send_response(200)
+            self.send_header('Content-Type','application/json; charset=utf-8')
+            self.send_header('Content-Length',str(len(encoded)))
+            self.send_header('Cache-Control','no-store')
+            self.end_headers()
+            self.wfile.write(encoded)
+
         def do_POST(self):
             if self.path != '/invoke' or self.headers.get('X-Hengshi-Token') != token:
                 self.send_error(403)

@@ -15,11 +15,11 @@ jobs:
           - runner: macos-15-intel
             arch: x64
             pyarch: x86_64
-            artifact: 衡势-1.3.0-macOS-Intel.dmg
+            artifact: 衡势-1.3.1-macOS-Intel.dmg
           - runner: macos-15
             arch: arm64
             pyarch: arm64
-            artifact: 衡势-1.3.0-macOS-Apple-Silicon.dmg
+            artifact: 衡势-1.3.1-macOS-Apple-Silicon.dmg
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     steps:
@@ -44,18 +44,22 @@ jobs:
           tests.test_signals tests.test_translation_service tests.test_valuation_history
           tests.test_valuation tests.test_event_intelligence tests.test_desktop_state
           tests.test_research_revision tests.test_tracking tests.test_unified_research tests.test_intraday
+          tests.test_backend_startup
       - name: 构建 ${{ matrix.arch }} Python 后端
         run: >-
-          python -m PyInstaller --noconfirm --clean --onefile --console
+          python -m PyInstaller --noconfirm --clean --onedir --console
           --target-arch ${{ matrix.pyarch }} --name hengshi-backend
           --add-data assets/sp500_constituents.csv:assets electron_backend.py
       - name: 准备 Electron 资源
         run: |
           mkdir -p electron/resources/backend electron/build
-          cp dist/hengshi-backend electron/resources/backend/hengshi-backend
-          chmod +x electron/resources/backend/hengshi-backend
+          mkdir -p electron/resources/backend/hengshi-backend
+          cp -R dist/hengshi-backend/. electron/resources/backend/hengshi-backend/
+          chmod +x electron/resources/backend/hengshi-backend/hengshi-backend
           python -c "from build_macos_intel import make_icon; make_icon()"
           cp nexus.icns electron/build/icon.icns
+      - name: 冒烟测试打包后的本地服务
+        run: python tools/smoke_packaged_backend.py electron/resources/backend/hengshi-backend/hengshi-backend
       - name: 安装 Electron 依赖
         working-directory: electron
         run: pnpm install --frozen-lockfile

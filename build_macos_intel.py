@@ -42,17 +42,15 @@ def main():
     if not PYTHON.exists():
         run(sys.executable, '-m', 'venv', VENV)
     run(PYTHON, '-m', 'pip', 'install', '-r', 'requirements-backend.txt')
-    run(PYTHON, '-m', 'unittest', 'tests.test_data_service', 'tests.test_market_model',
-        'tests.test_market_view', 'tests.test_signals', 'tests.test_translation_service',
-        'tests.test_valuation_history', 'tests.test_valuation',
-        'tests.test_event_intelligence', 'tests.test_desktop_state')
-    run(PYTHON, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onefile', '--console',
+    run(PYTHON, '-m', 'unittest', 'discover', '-s', 'tests')
+    run(PYTHON, '-m', 'PyInstaller', '--noconfirm', '--clean', '--onedir', '--console',
         '--target-arch', 'x86_64', '--name', 'hengshi-backend',
         '--add-data', 'assets/sp500_constituents.csv:assets', 'electron_backend.py')
     backend_dir = ROOT / 'electron' / 'resources' / 'backend'
     backend_dir.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(ROOT / 'dist' / 'hengshi-backend', backend_dir / 'hengshi-backend')
-    (backend_dir / 'hengshi-backend').chmod(0o755)
+    shutil.copytree(ROOT/'dist'/'hengshi-backend',backend_dir/'hengshi-backend',dirs_exist_ok=True)
+    (backend_dir/'hengshi-backend'/'hengshi-backend').chmod(0o755)
+    run(PYTHON,'tools/smoke_packaged_backend.py',backend_dir/'hengshi-backend'/'hengshi-backend')
     icon_dir = ROOT / 'electron' / 'build'
     icon_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(make_icon(), icon_dir / 'icon.icns')

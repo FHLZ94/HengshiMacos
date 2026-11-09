@@ -16,7 +16,7 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=str(APP_DIR / 'application.log'), level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s', encoding='utf-8')
 DB = APP_DIR / 'events.sqlite3'
-APP_VERSION = '1.3.0'
+APP_VERSION = '1.3.1'
 CONFIG = APP_DIR / 'settings.json'
 ICON = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'nexus.ico'
 DEFAULT_WATCHLIST = list(securities.DEFAULT_TRACKING)

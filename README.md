@@ -1,6 +1,6 @@
-# 衡势 1.2 正式版
+# 衡势 1.3.1 正式版
 
-出品：范光旭。版本：1.2.0。仓库：FHLZ94/HengshiMacos。
+出品：范光旭。版本：1.3.1。仓库：FHLZ94/HengshiMacos。
 
 衡势使用免费公开信息与本地缓存，围绕市场状态、全球事件、板块资金偏好、条件式交易参考及未来估值组织证据。Windows 使用 WebView2，Intel 与 Apple Silicon Mac 使用对应架构的隔离 Electron 窗口与同一套 Python 分析服务。
 
@@ -22,9 +22,13 @@
 - 事件阶段、可靠性、证据与时效用于动作风险层；消息分数不直接加减概率。不可变研究快照为后续前瞻验证保留当时证据。
 - 完整计算规则与权重说明见 `docs/model-1.1.0.md`（文档内容已更新到1.2规则）。
 
+## Mac 启动修复
+
+Intel 与 Apple Silicon Mac 改用目录式 Python 后端，避免首次启动解压大型单文件导致本地服务启动超时。打包流程会在对应架构的 macOS runner 上启动冻结后的后端，验证本地健康检查、IPC令牌及状态接口后才生成DMG。
+
 ## 安装与使用
 
-Windows 运行 `installer/衡势-安装包.exe`，按标准安装向导选择位置与桌面快捷方式。Intel Mac 安装文件为 `衡势-1.2.0-macOS-Intel.dmg`；M系列 Mac 安装文件为 `衡势-1.2.0-macOS-Apple-Silicon.dmg`。
+Windows 运行 `installer/衡势-安装包.exe`，按标准安装向导选择位置与桌面快捷方式。Intel Mac 安装文件为 `衡势-1.3.1-macOS-Intel.dmg`；M系列 Mac 安装文件为 `衡势-1.3.1-macOS-Apple-Silicon.dmg`。
 
 Windows 用户数据目录为 `%APPDATA%/AIMarketIntelligence/`；macOS 为应用数据目录中的衡势文件夹。连接设置在右上角设置按钮。可自动探测本地代理 `127.0.0.1:7890`，也可填写显式代理。基础功能无需付费金融API或本地大模型；可选 Ollama 用于进一步分析。
 
