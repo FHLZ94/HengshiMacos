@@ -36,10 +36,14 @@ class TranslationStore:
         unique=list(dict.fromkeys(text for text in texts if text))
         result={text:text for text in unique if re.search(r'[\u4e00-\u9fff]',text)}
         pending=[text for text in unique if text not in result]
+        key_to_text={self.key(text):text for text in pending}
+        keys=list(key_to_text)
         with self.lock,closing(sqlite3.connect(self.path)) as con:
-            for text in pending:
-                row=con.execute('SELECT chinese FROM translations WHERE key=?',(self.key(text),)).fetchone()
-                if row:result[text]=row[0]
+            for offset in range(0,len(keys),500):
+                batch=keys[offset:offset+500]
+                placeholders=','.join('?' for _ in batch)
+                rows=con.execute(f'SELECT key,chinese FROM translations WHERE key IN ({placeholders})',batch)
+                result.update({key_to_text[key]:chinese for key,chinese in rows})
         return result
 
     def save(self,original,chinese):

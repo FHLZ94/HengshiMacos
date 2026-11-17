@@ -14,6 +14,7 @@ METHOD_ARGS = {
     'save_public_posts': 1, 'save_network': 2, 'set_local_model': 1, 'open_url': 1,
     'analyze_event': 1, 'translate_event': 1,
     'event_market_context': 1, 'get_event_intelligence': 1,
+    'get_market_slots': 0, 'save_market_slots': 1, 'get_market_rsi': 2,
 }
 
 

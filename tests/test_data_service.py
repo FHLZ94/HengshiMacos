@@ -1,7 +1,7 @@
 import unittest
 from datetime import datetime,timezone
 from types import SimpleNamespace
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 import data_service
 import main
@@ -29,6 +29,15 @@ class DataServiceTests(unittest.TestCase):
         self.assertFalse(data_service.intelligence_relevant('Celebrity event draws attention', 'entertainment story', []))
         self.assertTrue(data_service.intelligence_relevant('Commerce Department tightens semiconductor export controls', 'AI chip supply chain policy', []))
         self.assertTrue(data_service.intelligence_relevant('Oracle expands AI datacenter capacity', 'capital expenditure guidance', ['ORCL']))
+        self.assertTrue(data_service.intelligence_relevant('NVIDIA and Lambda deploy CPO links for AI datacenters', '', []))
+        self.assertIn('先进封装与光互连',data_service.intelligence_topics([],'NVIDIA CPO and silicon photonics deployment'))
+
+    def test_source_tiers_use_publisher_identity_not_aggregator_url(self):
+        self.assertEqual(data_service.source_tier('Google News · Technology','CNBC','https://news.google.com/story'),'专业媒体')
+        self.assertEqual(data_service.source_tier('SemiAnalysis · Industry Research','','https://www.semianalysis.com/story'),'行业专业')
+        self.assertEqual(data_service.source_tier('Google News · Technology','','https://news.google.com/story'),'聚合检索')
+        self.assertEqual(data_service.source_tier('Official feed','','https://www.whitehouse.gov/action'),'官方/原始')
+        self.assertEqual(data_service.source_tier('Google · Official Blog','','https://blog.google/story'),'官方/原始')
 
     def test_impact_words_do_not_match_inside_other_words(self):
         self.assertEqual(main.impact_level('Forward outlook for software'), '低')
@@ -39,13 +48,33 @@ class DataServiceTests(unittest.TestCase):
              'source':'A','published':'2026-11-07T00:00:00+00:00','impact':'中',
              'sentiment':62,'label':'偏正面','tickers':['ORCL']}
         other={**row,'title':'Oracle raises guidance - Publisher B','link':'https://b.example/2','source':'B'}
+        batches=[]
         with patch.object(data_service,'_feed',side_effect=[([row],{'source':'A','status':'ok'}),
                                                           ([other],{'source':'B','status':'ok'})]):
             rows,health=data_service.fetch_news([], [('A','https://a.example'),('B','https://b.example')],{},
-                                                main.sentiment_score,main.impact_level)
+                                                main.sentiment_score,main.impact_level,
+                                                on_batch=lambda batch:batches.extend(batch))
         self.assertEqual(len(rows),1)
         self.assertEqual(len(health),2)
         self.assertEqual(set(rows[0]['independent_publishers']),{'A','B'})
+        self.assertEqual(len(batches),2)
+
+    def test_feed_etag_304_reuses_parsed_rows(self):
+        url='https://unit-test.example/rss-etag'
+        entry={'title':'Oracle expands AI datacenter capacity','link':'https://oracle.com/story',
+               'summary':'Oracle AI datacenter capacity expansion'}
+        first=SimpleNamespace(status_code=200,content=b'<rss/>',headers={'ETag':'"v1"','Last-Modified':'yesterday'},
+                              raise_for_status=Mock())
+        not_modified=SimpleNamespace(status_code=304,content=b'',headers={},raise_for_status=Mock())
+        with patch.object(data_service,'_FEED_CACHE',{}), \
+             patch.object(data_service,'http_get',side_effect=[first,not_modified]) as request, \
+             patch.object(data_service.feedparser,'parse',return_value=SimpleNamespace(entries=[entry],bozo=False)) as parse:
+            initial,_=data_service._feed('Oracle IR',url,{},main.sentiment_score,main.impact_level,['ORCL'])
+            cached,status=data_service._feed('Oracle IR',url,{},main.sentiment_score,main.impact_level,['ORCL'])
+        self.assertEqual(initial,cached)
+        self.assertTrue(status['cached'])
+        self.assertEqual(request.call_args_list[1].kwargs['headers']['If-None-Match'],'"v1"')
+        parse.assert_called_once()
 
     def test_offline_sources_return_visible_errors(self):
         with patch('data_service.requests.get',side_effect=data_service.requests.Timeout):

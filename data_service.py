@@ -1,17 +1,19 @@
 """Free public market sources with bounded requests and explicit source health."""
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import copy
 import csv
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from io import StringIO
 from pathlib import Path
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 import html
 import re
 import socket
 import sys
 import threading
 import time
+from zoneinfo import ZoneInfo
 
 import feedparser
 import requests
@@ -34,9 +36,13 @@ SECTOR_TICKERS = ('XLK','SMH','XLV','XLP','XLU','XLY','XLF','XLE','XLI','XLC','X
 ETF_TICKERS = securities.FUND_CODES
 INTELLIGENCE_TERMS = ('semiconductor','chip','ai infrastructure','artificial intelligence','data center','datacenter',
                       'advanced packaging','chiplet','hbm','memory','optical interconnect','photonic','foundry',
-                      'export control','export ban','tariff','commerce department','white house','congress','senate',
-                      'federal reserve','interest rate','capex','cloud compute','supply chain','advanced packaging',
-                      '半导体','芯片','人工智能','算力','数据中心','先进封装','芯粒','存储','光通信','光模块','晶圆','封装','出口管制','商务部','白宫','国会','供应链','资本开支')
+                      'co-packaged optics','silicon photonics','optical i/o','cpo','cowos','gpu','accelerator',
+                      'hyperscaler','liquid cooling','grid power','ai server','lambda labs','export control',
+                      'export ban','tariff','commerce department','white house','congress','senate',
+                      'federal reserve','interest rate','capex','cloud compute','supply chain',
+                      '半导体','芯片','人工智能','算力','数据中心','先进封装','芯粒','存储','光通信','光模块',
+                      '共封装光学','硅光','光互连','晶圆','封装','出口管制','商务部','白宫','国会','供应链','资本开支',
+                      '云厂商','液冷','电力接入','算力服务器','存储带宽','先进制程')
 IRRELEVANT_TERMS = ('terrorism','terrorist','terrorist attack','murder','crime','poland investigation','poland probe',
                      'celebrity','sports','entertainment','恐怖主义','恐袭','谋杀','犯罪','波兰调查','名人','体育','娱乐')
 
@@ -66,6 +72,16 @@ INTELLIGENCE_TICKERS = ('NVDA', 'AMD', 'TSM', 'ASML', 'AMAT', 'KLAC', 'LRCX',
                         'ARM', 'QCOM', 'COHR', 'ANET', 'MSFT', 'AMZN', 'GOOGL')
 SMH_RELATED = frozenset(('NVDA', 'AMD', 'TSM', 'ASML', 'AMAT', 'KLAC', 'LRCX',
                          'ARM', 'QCOM', 'AVGO', 'MRVL', 'MU', 'INTC','SKHY'))
+OFFICIAL_HOSTS = ('whitehouse.gov', 'federalreserve.gov', 'sec.gov', 'commerce.gov', 'bis.gov',
+                  'nvidia.com', 'google.com', 'blog.google', 'openai.com', 'microsoft.com', 'oracle.com',
+                  'intel.com', 'marvell.com', 'broadcom.com', 'micron.com', 'lumentum.com',
+                  'skhynix.com', 'tsmc.com', 'asml.com', 'amd.com', 'coherent.com')
+SPECIALIST_SOURCES = ('semianalysis', 'semiwiki', 'lightreading', 'eetimes', 'datacenter dynamics')
+FINANCIAL_PUBLISHERS = ('reuters', 'bloomberg', 'cnbc', 'new york times', 'seeking alpha',
+                        'marketwatch', 'investing.com', 'financial times', 'wall street journal')
+_FEED_CACHE = {}
+_FEED_CACHE_LOCK = threading.Lock()
+_FEED_CACHE_MAX_AGE = timedelta(hours=12)
 
 
 def intelligence_topics(tickers, title=''):
@@ -78,6 +94,15 @@ def intelligence_topics(tickers, title=''):
     if symbols & {'MSFT','AMZN','GOOGL','GOOG','ORCL'}: topics.append('云与算力')
     if symbols & {'MU','SKHY'} or any(term in upper for term in ('SK HYNIX','SAMSUNG','HBM MEMORY')):
         topics.append('存储')
+    if any(term in upper for term in ('CPO','CO-PACKAGED OPTICS','SILICON PHOTONICS','OPTICAL I/O',
+                                      'OPTICAL INTERCONNECT','ADVANCED PACKAGING','COWOS','HBM')):
+        topics.append('先进封装与光互连')
+    if any(term in upper for term in ('ARTIFICIAL INTELLIGENCE','GPU','HYPERSCALER',
+                                      'DATA CENTER','DATACENTER','CLOUD COMPUTE','LAMBDA LABS')) or re.search(r'(?<![A-Z])AI(?![A-Z])',upper):
+        topics.append('AI基础设施')
+    if any(term in upper for term in ('WHITE HOUSE','CONGRESS','SENATE','EXPORT CONTROL',
+                                      'EXPORT BAN','TARIFF','COMMERCE DEPARTMENT')):
+        topics.append('政策与地缘')
     return topics
 
 
@@ -147,6 +172,36 @@ def title_key(title):
     return re.sub(r'[^\w]+', ' ', base).strip()
 
 
+def source_tier(source, publisher='', link=''):
+    source_text=(source or '').casefold()
+    publisher_text=(publisher or '').casefold()
+    host=''
+    try:
+        host=(urlsplit(link).hostname or '').casefold()
+    except (TypeError,ValueError):
+        pass
+    if host not in ('news.google.com','www.google.com') and any(
+        host==domain or host.endswith('.'+domain) for domain in OFFICIAL_HOSTS
+    ):
+        return '官方/原始'
+    if any(name in publisher_text for name in ('white house','federal reserve','sec','nvidia','google','openai','microsoft')):
+        return '官方/原始'
+    if source_text.startswith(('google news','即时检索')) and not publisher_text:
+        return '聚合检索'
+    if any(name in publisher_text for name in FINANCIAL_PUBLISHERS) or any(name in source_text for name in FINANCIAL_PUBLISHERS):
+        return '专业媒体'
+    if any(name in publisher_text for name in SPECIALIST_SOURCES) or any(name in source_text for name in SPECIALIST_SOURCES):
+        return '行业专业'
+    if publisher_text and publisher_text not in ('google news','google news rss'):
+        return '媒体/机构'
+    return '聚合检索' if 'google news' in source_text else '媒体/机构'
+
+
+def source_rank(article):
+    return {'官方/原始':4,'专业媒体':3,'行业专业':2,'媒体/机构':2,'聚合检索':1}.get(
+        source_tier(article.get('source',''),article.get('publisher',''),article.get('link','')),0)
+
+
 def ticker_matches(text, watchlist, config=None):
     upper = text.upper()
     found = []
@@ -169,8 +224,20 @@ def ticker_matches(text, watchlist, config=None):
 def _feed(source, url, config, sentiment_fn, impact_fn, watchlist):
     started = time.monotonic()
     proxy = configured_proxy(config, for_google='news.google.com' in url)
+    with _FEED_CACHE_LOCK:
+        cached=_FEED_CACHE.get(url)
+        cache=copy.deepcopy(cached) if cached else None
+    request_headers=dict(HEADERS)
+    if cache:
+        if cache.get('etag'):request_headers['If-None-Match']=cache['etag']
+        if cache.get('last_modified'):request_headers['If-Modified-Since']=cache['last_modified']
     try:
-        response = http_get(url, timeout=TIMEOUT, headers=HEADERS, proxies=proxy)
+        response = http_get(url, timeout=(4,7), headers=request_headers, proxies=proxy)
+        if getattr(response,'status_code',200)==304 and cache:
+            rows=cache.get('rows',[])
+            return copy.deepcopy(rows), {'source':source,'status':'ok','count':len(rows),
+                'latency_ms':round((time.monotonic()-started)*1000),
+                'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'cached':True}
         response.raise_for_status()
         parsed = feedparser.parse(response.content)
         if parsed.bozo and not parsed.entries:
@@ -189,12 +256,19 @@ def _feed(source, url, config, sentiment_fn, impact_fn, watchlist):
             publisher=clean((entry.get('source') or {}).get('title') or '')
             tickers=ticker_matches(body, watchlist, config)
             if not intelligence_relevant(title,summary,tickers):continue
+            independent=publisher or (source if not source.casefold().startswith(('google news','即时检索')) else '')
             rows.append({'title': title, 'summary': summary, 'link': link,
                          'source': source, 'publisher': publisher,
+                         'source_tier':source_tier(source,publisher,link),
+                         'independent_publishers':[independent] if independent else [],
                          'published': parse_date(entry.get('published')),
                          'impact': impact, 'grade': grade, 'credibility': trust, 'horizon': horizon,
                          'sentiment': score, 'label': label,
                          'tickers': tickers})
+        headers=getattr(response,'headers',{}) or {}
+        with _FEED_CACHE_LOCK:
+            _FEED_CACHE[url]={'rows':copy.deepcopy(rows),'etag':headers.get('ETag'),
+                'last_modified':headers.get('Last-Modified'),'fetched_at':datetime.now(timezone.utc)}
         return rows, {'source': source, 'status': 'ok', 'count': len(rows),
                       'latency_ms': round((time.monotonic()-started)*1000), 'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
     except requests.Timeout:
@@ -205,11 +279,15 @@ def _feed(source, url, config, sentiment_fn, impact_fn, watchlist):
         reason = type(exc).__name__
     except Exception as exc:
         reason = type(exc).__name__
+    if cache and datetime.now(timezone.utc)-cache.get('fetched_at',datetime.min.replace(tzinfo=timezone.utc))<=_FEED_CACHE_MAX_AGE:
+        stale=copy.deepcopy(cache.get('rows',[]))
+        return stale, {'source':source,'status':'stale','count':len(stale),'reason':reason,
+            'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'cached':True}
     return [], {'source': source, 'status': 'error', 'count': 0, 'reason': reason,
                 'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
 
 
-def fetch_news(watchlist, feeds, config, sentiment_fn, impact_fn):
+def fetch_news(watchlist, feeds, config, sentiment_fn, impact_fn, on_batch=None):
     sources = list(feeds)
     coverage=list(dict.fromkeys([*watchlist,*INTELLIGENCE_TICKERS]))
     for ticker in watchlist:
@@ -224,6 +302,9 @@ def fetch_news(watchlist, feeds, config, sentiment_fn, impact_fn):
             rows, state = future.result()
             all_rows.extend(rows)
             health.append(state)
+            if rows and on_batch:
+                try:on_batch(copy.deepcopy(rows))
+                except Exception:pass
     unique = {}
     for row in all_rows:
         key = title_key(row['title']) or row['link']
@@ -234,7 +315,7 @@ def fetch_news(watchlist, feeds, config, sentiment_fn, impact_fn):
             continue
         publishers=set(old.get('independent_publishers') or [])
         if publisher:publishers.add(publisher)
-        if (row['published'], len(row['tickers'])) > (old['published'], len(old['tickers'])):
+        if (source_rank(row),row['published'],len(row['tickers'])) > (source_rank(old),old['published'],len(old['tickers'])):
             unique[key]={**row,'independent_publishers':sorted(publishers)}
         else:
             old['independent_publishers']=sorted(publishers)
@@ -294,6 +375,7 @@ def _quote(ticker, config):
         change = float(re.sub(r'[^0-9.\-]', '', primary['percentageChange']))
         row = {'ticker': ticker, 'name': data.get('companyName', ticker), 'exchange': data.get('exchange', ''),
                'price': price, 'change': change, 'asof': primary.get('lastTradeTimestamp',''),
+               'source_time':primary.get('lastTradeTimestamp',''),
                'fetched_at': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'source': 'Nasdaq',
                'market_status':data.get('marketStatus',''),'session':'regular','is_realtime':bool(primary.get('isRealTime')),
                'price_label':'最近成交' if primary.get('isRealTime') else '延迟最近成交'}
@@ -622,6 +704,24 @@ def _quote_date(value):
     return None
 
 
+def quote_observation_time(value):
+    """Parse an actual quote timestamp; retrieval time is never a substitute."""
+    if not value:return None
+    raw=str(value).strip()
+    try:
+        parsed=datetime.fromisoformat(raw.replace('Z','+00:00'))
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=ZoneInfo('America/New_York'))
+    except ValueError:pass
+    cleaned=re.sub(r'\s+(?:ET|EST|EDT)$','',raw,flags=re.I)
+    formats=('%b %d, %Y %I:%M:%S %p','%b %d, %Y %I:%M %p',
+             '%m/%d/%y %I:%M:%S %p','%m/%d/%y %I:%M %p',
+             '%m/%d/%Y %I:%M:%S %p','%m/%d/%Y %I:%M %p')
+    for fmt in formats:
+        try:return datetime.strptime(cleaned,fmt).replace(tzinfo=ZoneInfo('America/New_York'))
+        except ValueError:continue
+    return None
+
+
 def merge_session_quote(regular,item):
     """Compare observation dates, never retrieval times, before replacing."""
     if not regular:return item
@@ -650,10 +750,12 @@ def parse_session_quotes(entries,watchlist,checked):
                      and status in ('POST_MKT','PRE_MKT','CLOSED') and float(ext.get('last') or 0)>0)
             price=float(ext['last']) if use_ext else regular
             session=('post' if ext_type=='POST_MKT' else 'pre') if use_ext else 'regular'
-            label=('盘后成交' if session=='post' else '盘前成交' if session=='pre'
-                   else '盘中成交' if status=='REG_MKT' else '最近收盘')
+            label=('延迟盘后报价' if session=='post' else '延迟盘前报价' if session=='pre'
+                   else '延迟盘中报价' if status=='REG_MKT' else '最近收盘')
             rows.append(dict(ticker=ticker,price=price,change=round((price/prior-1)*100,4) if prior>0 else 0,
                 asof=(ext_day if use_ext else day).isoformat(),fetched_at=checked,
+                source_time=(ext.get('last_time') or ext.get('last_timedate') if use_ext
+                             else entry.get('last_timedate','')),
                 source='CNBC · Nasdaq 延长时段' if use_ext else 'CNBC 报价',
                 session=session,price_label=label,is_realtime=False,regular_close=regular,
                 regular_asof=day.isoformat(),session_change_pct=round((price/regular-1)*100,4) if use_ext else None,

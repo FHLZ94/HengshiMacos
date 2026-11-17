@@ -43,6 +43,23 @@ class ResearchRevisionTests(unittest.TestCase):
         self.assertEqual(data_service.merge_session_quote(regular,pre)['price'],100)
         self.assertEqual(data_service.merge_session_quote(regular,{**pre,'asof':'2026-11-09'})['price'],95)
 
+    def test_delayed_same_day_snapshot_cannot_replace_newer_realtime_quote(self):
+        with tempfile.TemporaryDirectory() as folder:
+            root=Path(folder)
+            with patch.object(main,'DB',root/'events.sqlite3'):
+                main.init_db()
+                live={'ticker':'QQQ','price':582.4,'asof':'Nov 17, 2026','source_time':'Nov 17, 2026 03:10 PM ET',
+                      'session':'regular','market_status':'Open','is_realtime':True,'price_label':'最近成交',
+                      'fetched_at':'2026-11-17T20:10:05+00:00'}
+                delayed={**live,'price':581.9,'source_time':'Nov 17, 2026 02:55 PM ET',
+                         'is_realtime':False,'price_label':'延迟盘中报价','fetched_at':'2026-11-17T20:10:30+00:00'}
+                main.save_snapshot([live],[])
+                main.save_snapshot([delayed],[])
+                saved=main.load_snapshot(['QQQ'])[1][0]
+                self.assertEqual(saved['price'],582.4)
+                self.assertTrue(saved['is_realtime'])
+                gc.collect()
+
     def test_session_parser_checks_market_date_and_regular_session_state(self):
         base={'symbol':'AVGO','last':'293.69','previous_day_closing':'291.53',
               'last_timedate':'11/06/26 EST','curmktstatus':'POST_MKT',
@@ -50,6 +67,8 @@ class ResearchRevisionTests(unittest.TestCase):
         parsed=data_service.parse_session_quotes([base],['AVGO'],'now')[0]
         self.assertEqual(parsed['price'],295.27)
         self.assertEqual(parsed['regular_close'],293.69)
+        self.assertEqual(parsed['price_label'],'延迟盘后报价')
+        self.assertEqual(parsed['source_time'],'2026-11-06')
         base['ExtendedMktQuote']['last_time']='2026-11-05'
         self.assertEqual(data_service.parse_session_quotes([base],['AVGO'],'now')[0]['price'],293.69)
         base['ExtendedMktQuote']['last_time']='2026-11-06';base['curmktstatus']='REG_MKT'
@@ -120,7 +139,7 @@ class ResearchRevisionTests(unittest.TestCase):
     def test_offline_refresh_recalculates_before_network_finishes(self):
         with tempfile.TemporaryDirectory() as folder:
             root=Path(folder)
-            with patch.object(main,'APP_DIR',root),patch.object(main,'DB',root/'events.sqlite3'),patch.object(main,'CONFIG',root/'settings.json'),patch.object(DesktopAPI,'_scheduler',lambda s:None),patch.object(DesktopAPI,'_refresh_worker',lambda s,c:None),patch.object(DesktopAPI,'_refresh_public_async',lambda s:None),patch.object(DesktopAPI,'_refresh_intraday_async',lambda s:None),patch.object(DesktopAPI,'_start_translation',lambda s:None):
+            with patch.object(main,'APP_DIR',root),patch.object(main,'DB',root/'events.sqlite3'),patch.object(main,'CONFIG',root/'settings.json'),patch.object(DesktopAPI,'_scheduler',lambda s:None),patch.object(DesktopAPI,'_refresh_worker',lambda s,c:None),patch.object(DesktopAPI,'_refresh_public_async',lambda s:None),patch.object(DesktopAPI,'_refresh_intraday_async',lambda s,**kwargs:None),patch.object(DesktopAPI,'_start_translation',lambda s:None):
                 main.init_db()
                 h=[self.history(t,400) for t in ('QQQ','SPY','SMH','^VIX')]
                 main.save_snapshot([],[],histories=h)

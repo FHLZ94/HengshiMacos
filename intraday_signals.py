@@ -10,6 +10,13 @@ import data_service
 NY=ZoneInfo('America/New_York')
 
 
+def _session_for_minute(minute):
+    if 240<=minute<570:return '盘前'
+    if 570<=minute<960:return '常规'
+    if 960<=minute<1200:return '盘后'
+    return None
+
+
 def parse_chart(payload,ticker,now=None,interval=15):
     now=now or datetime.now(timezone.utc)
     result=(payload.get('chart') or {}).get('result') or []
@@ -20,12 +27,13 @@ def parse_chart(payload,ticker,now=None,interval=15):
     for i,stamp in enumerate(series.get('timestamp') or []):
         start=datetime.fromtimestamp(stamp,timezone.utc);local=start.astimezone(NY)
         minute=local.hour*60+local.minute
-        if local.weekday()>4 or not 570<=minute<960 or start+timedelta(minutes=interval)>now:continue
+        session=_session_for_minute(minute)
+        if local.weekday()>4 or session is None or start+timedelta(minutes=interval)>now:continue
         try:
             values={k:float(quotes[k][i]) for k in ('open','high','low','close','volume')}
             if not all(isfinite(v) for v in values.values()) or values['close']<=0 or values['volume']<0:continue
             if not values['low']<=values['close']<=values['high']:continue
-            bars.append({'time':int(stamp),'end':int(stamp)+interval*60,**values})
+            bars.append({'time':int(stamp),'end':int(stamp)+interval*60,'session':session,**values})
         except (KeyError,IndexError,TypeError,ValueError):continue
     bars=list({b['time']:b for b in bars}.values());bars.sort(key=lambda b:b['time'])
     if len(bars)<80:raise ValueError(f'完整{interval}分钟样本不足80根')
@@ -38,16 +46,22 @@ def resample(bars,minutes):
     buckets={}
     for b in bars:
         local=datetime.fromtimestamp(b['time'],timezone.utc).astimezone(NY)
-        offset=local.hour*60+local.minute-570;slot=offset//minutes
-        buckets.setdefault((local.date(),slot),[]).append(b)
+        minute=local.hour*60+local.minute
+        session=b.get('session') or _session_for_minute(minute)
+        if not session:continue
+        start={'盘前':240,'常规':570,'盘后':960}[session]
+        offset=minute-start;slot=offset//minutes
+        buckets.setdefault((local.date(),session,slot),[]).append(b)
     result=[]
-    for (day,slot),group in sorted(buckets.items()):
-        width=min(minutes,390-slot*minutes);expected=width//15
+    lengths={'盘前':330,'常规':390,'盘后':240}
+    for (day,session,slot),group in sorted(buckets.items()):
+        width=min(minutes,lengths[session]-slot*minutes);expected=(width+14)//15
         group.sort(key=lambda b:b['time'])
         if len(group)!=expected or any(b['time']-a['time']!=900 for a,b in zip(group,group[1:])):continue
         result.append({'time':group[0]['time'],'end':group[-1]['time']+900,'open':group[0]['open'],
             'high':max(b['high'] for b in group),'low':min(b['low'] for b in group),
-            'close':group[-1]['close'],'volume':sum(b['volume'] for b in group),'session_tail':width<minutes})
+            'close':group[-1]['close'],'volume':sum(b['volume'] for b in group),
+            'session':session,'session_tail':width<minutes})
     return result
 
 
@@ -70,6 +84,13 @@ def wilder_rsi(values,period=6):
         down=(down*(period-1)+max(-changes[i-1],0))/period
         result[i]=100-100/(1+up/down) if down else 100 if up else 50
     return result
+
+
+def _rsi_pressure(value,side):
+    if value is None:return None
+    value=float(value)
+    if side=='oversold':return 1.0 if value<=30 else 0.0 if value>=40 else (40-value)/10
+    return 1.0 if value>=70 else 0.0 if value<=60 else (value-60)/10
 
 
 def indicators(bars):
@@ -157,7 +178,8 @@ def frame(bars,minutes):
     high_stall=bool(near_high and rsi1[-1]>=70 and move<=.35*atr and ((ratio is not None and ratio>=1.2) or pressure<=-.25))
     absorption='放量承接' if rising and pressure>0 and position>=.65 and ratio and ratio>=1.2 else '初步承接' if rising and pressure>0 and position>=.6 else '放量卖压' if not rising and pressure<0 and ratio and ratio>=1.2 else '承接偏弱'
     return {'available':True,'minutes':minutes,'bars':len(bars),'asof':datetime.fromtimestamp(current['end'],timezone.utc).isoformat(),
-            'rsi14':round(rsi[-1],1),'rsi1':round(rsi1[-1],1),'oversold':rsi1[-1]<=30,'divergence':'形态确认' if confirmed else '候选背离' if candidate else '未见当前背离',
+            'session':current.get('session') or _session_for_minute(datetime.fromtimestamp(current['time'],timezone.utc).astimezone(NY).hour*60+datetime.fromtimestamp(current['time'],timezone.utc).astimezone(NY).minute),
+            'rsi14':round(rsi[-1],1),'rsi1':round(rsi1[-1],2),'oversold':rsi1[-1]<=30,'divergence':'形态确认' if confirmed else '候选背离' if candidate else '未见当前背离',
             'confirmed':bool(confirmed),'candidate':bool(candidate),'evidence':confirmed or candidate,
             'top_divergence':'形态确认' if confirmed_top else '候选背离' if candidate_top else '未见当前背离',
             'top_confirmed':bool(confirmed_top),'top_candidate':bool(candidate_top),'top_evidence':confirmed_top or candidate_top,
@@ -185,8 +207,13 @@ def analyze(history):
     bottom_score=sum(weights[k]*(100 if v.get('confirmed') else 40 if v.get('candidate') else 0) for k,v in score_frames.items())
     top_score=sum(weights[k]*(100 if v.get('top_confirmed') else 40 if v.get('top_candidate') else 0) for k,v in score_frames.items())
     rsi5=frames.get('5',{}).get('rsi1');rsi15=frames.get('15',{}).get('rsi1');rsi30=frames.get('30',{}).get('rsi1')
-    rsi_signal=('短线超卖，可小额关注' if rsi5 is not None and rsi15 is not None and rsi5<=30 and rsi15<=30 else
-                '短线超买，避免追价' if rsi5 is not None and rsi15 is not None and rsi5>=70 and rsi15>=70 else
+    rsi_inputs={'5':rsi5,'15':rsi15,'30':rsi30}
+    rsi_oversold_score=round(sum(weights[k]*(_rsi_pressure(rsi_inputs[k],'oversold') or 0)
+                                 for k in weights),3)
+    rsi_overbought_score=round(sum(weights[k]*(_rsi_pressure(rsi_inputs[k],'overbought') or 0)
+                                   for k in weights),3)
+    rsi_signal=('短线超卖，可小额关注' if rsi_oversold_score>=.8 else
+                '短线超买，避免追价' if rsi_overbought_score>=.8 else
                 '5分超卖，等待15分确认' if rsi5 is not None and rsi5<=30 else
                 '15分超卖，等待5分确认' if rsi15 is not None and rsi15<=30 else
                 '5分超买，等待15分确认' if rsi5 is not None and rsi5>=70 else
@@ -196,6 +223,8 @@ def analyze(history):
     return {'available':focus.get('available',False),'ticker':history['ticker'],'frames':frames,'resonance':resonance,'absorption':absorption,
             'primary':primary,'primary_minutes':15,'weights':weights,'rsi_signal':rsi_signal,
             'rsi_5':rsi5,'rsi_15':rsi15,'rsi_30':rsi30,
+            'rsi_weights':weights,'rsi_oversold_score':rsi_oversold_score,
+            'rsi_overbought_score':rsi_overbought_score,
             'bottom_score':round(bottom_score),'top_score':round(top_score),'formation':formation,
             'confirmed_frames':confirmed,'source':history.get('source'),'fetched_at':history.get('fetched_at'),
             'top_confirmed_frames':top_confirmed,'top_resonance':top_resonance,
@@ -271,17 +300,20 @@ def fetch(config):
     def one(ticker):
         for host in ('query1.finance.yahoo.com','query2.finance.yahoo.com'):
             try:
-                r=data_service.http_get(f'https://{host}/v8/finance/chart/{ticker}',params={'range':'60d','interval':'15m','includePrePost':'false'},headers=data_service.HEADERS,proxies=data_service.configured_proxy(config,for_google=True),timeout=(4,9))
+                r=data_service.http_get(f'https://{host}/v8/finance/chart/{ticker}',params={'range':'60d','interval':'15m','includePrePost':'true'},headers=data_service.HEADERS,proxies=data_service.configured_proxy(config,for_google=True),timeout=(4,9))
                 r.raise_for_status()
                 base=parse_chart(r.json(),ticker,interval=15)
-                r5=data_service.http_get(f'https://{host}/v8/finance/chart/{ticker}',params={'range':'10d','interval':'5m','includePrePost':'false'},headers=data_service.HEADERS,proxies=data_service.configured_proxy(config,for_google=True),timeout=(4,9))
+                r5=data_service.http_get(f'https://{host}/v8/finance/chart/{ticker}',params={'range':'10d','interval':'5m','includePrePost':'true'},headers=data_service.HEADERS,proxies=data_service.configured_proxy(config,for_google=True),timeout=(4,9))
                 r5.raise_for_status();base['bars5']=parse_chart(r5.json(),ticker,interval=5)['bars']
                 return ticker,base
             except (requests.RequestException,ValueError,TypeError,KeyError):continue
         return ticker,None
     result={}
-    with ThreadPoolExecutor(max_workers=2) as pool:
+    with ThreadPoolExecutor(max_workers=4) as pool:
         for future in as_completed([pool.submit(one,t) for t in ('QQQ','SPY','SMH','ORCL')]):
             ticker,row=future.result()
             if row:result[ticker]=row
-    return result,{'source':'分钟线与背离结构','status':'ok' if result else 'error','count':len(result)}
+    checked=datetime.now(timezone.utc).isoformat(timespec='seconds')
+    return result,{'source':'分钟线与背离结构','status':'ok' if result else 'error',
+                   'count':len(result),'checked_at':checked,
+                   'missing':[ticker for ticker in ('QQQ','SPY','SMH','ORCL') if ticker not in result]}

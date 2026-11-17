@@ -7,14 +7,20 @@ import json
 from zoneinfo import ZoneInfo
 import numpy as np
 
-MODEL_VERSION = '3.1.0'
+MODEL_VERSION = '3.1.1'
 FEATURE_NAMES = ('5日动量','20日动量','60日动量','20日均线偏离','60日均线偏离',
                  '63日回撤','相对标普强弱','半导体相对强弱','波动率水平','波动率变化',
                  '短长波动比','量比','收盘位置','下跌放量')
 
 
+def completed_daily_bars(bars,now=None):
+    now=(now or datetime.now(timezone.utc)).astimezone(ZoneInfo('America/New_York'))
+    cutoff=now.date().isoformat();closed=(now.hour,now.minute)>=(16,15)
+    return [bar for bar in bars if bar.get('date','')<cutoff or (bar.get('date','')==cutoff and closed)]
+
+
 def history_key(histories):
-    payload = [(h['ticker'], h.get('bars', [])) for h in histories
+    payload = [(h['ticker'], completed_daily_bars(h.get('bars', []))) for h in histories
                if h['ticker'] in ('QQQ','SPY','SMH','^VIX')]
     return hashlib.sha256(json.dumps(sorted(payload), sort_keys=True).encode()).hexdigest()
 
@@ -24,12 +30,8 @@ def _pct(current, previous):
 
 
 def _prepare(histories):
-    now = datetime.now(timezone.utc).astimezone(ZoneInfo('America/New_York'))
-    cutoff = now.date().isoformat()
-    closed = (now.hour,now.minute)>=(16,15)
-    mapping = {r['ticker']: {b['date']: b for b in r.get('bars', [])
-                            if float(b.get('close', 0)) > 0 and
-                            (b['date']<cutoff or b['date']==cutoff and closed)} for r in histories}
+    mapping={r['ticker']:{b['date']:b for b in completed_daily_bars(r.get('bars',[]))
+                         if float(b.get('close',0))>0} for r in histories}
     if not all(mapping.get(t) for t in ('QQQ','SPY','SMH','^VIX')):
         return []
     days = sorted(set(mapping['QQQ']) & set(mapping['SPY']) & set(mapping['SMH']))
@@ -251,7 +253,7 @@ def _simple_forecast(outcomes):
 
 
 def analyze_single_security(history):
-    bars=sorted([b for b in history.get('bars',[]) if b.get('close',0)>0],key=lambda b:b['date'])
+    bars=sorted([b for b in completed_daily_bars(history.get('bars',[])) if b.get('close',0)>0],key=lambda b:b['date'])
     ticker=history.get('ticker','')
     if len(bars)<150:
         empty=_simple_forecast([])
@@ -281,6 +283,33 @@ def analyze_single_security(history):
             'up3_pct':round(p3['probability']*100,1),'up5_pct':round(p5['probability']*100,1),
             'bottom10_pct':round(pb['probability']*100,1),'setup':setup,
             'training_samples':p5['training_samples'],'history_days':len(bars)}
+
+
+def live_price_position(history,price,asof=None):
+    """Rank the latest quote against past volatility-scaled 20-day deviations."""
+    if not isinstance(price,(int,float)) or not np.isfinite(price) or price<=0:
+        return {'available':False,'reason':'最新报价无效'}
+    source=history.get('bars',[]) if history else []
+    bars=(completed_daily_bars(source) if asof is None else
+          [bar for bar in source if bar.get('date','')<=asof])
+    bars=sorted([bar for bar in bars if float(bar.get('close') or 0)>0],key=lambda bar:bar['date'])
+    closes=np.asarray([float(bar['close']) for bar in bars],dtype=float)
+    if len(closes)<150:
+        return {'available':False,'reason':'历史日线不足150根','asof':bars[-1]['date'] if bars else None}
+    deviations=[]
+    for index in range(20,len(closes)):
+        window=closes[index-20:index+1]
+        returns=np.diff(np.log(window))
+        volatility=max(float(np.std(returns)),.003)
+        deviations.append(float(np.log(window[-1]/np.mean(window[-20:]))/volatility))
+    window=np.append(closes[-20:],float(price))
+    returns=np.diff(np.log(window))
+    volatility=max(float(np.std(returns)),.003)
+    current=float(np.log(window[-1]/np.mean(window[-20:]))/volatility)
+    sample=np.asarray(deviations,dtype=float)
+    percentile=(float(np.sum(sample<current))+.5*float(np.sum(sample==current)))/len(sample)*100
+    return {'available':True,'price':float(price),'percentile':round(percentile,1),
+            'samples':len(sample),'asof':bars[-1]['date'],'position_z':round(current,3)}
 
 
 

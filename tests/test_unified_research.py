@@ -82,6 +82,27 @@ class EventRiskTests(unittest.TestCase):
         risks=event_risk.assess_events([],now=self.now)
         self.assertIn('等待承接',event_risk.trading_environment(m,risks)['SMH']['label'])
 
+    def test_live_entry_reference_requires_same_quote_position_and_weighted_rsi(self):
+        m=self.model();risks=event_risk.assess_events([],now=self.now)
+        minute={'SMH':{'available':True,'stale':False,'rsi_oversold_score':.8,
+            'rsi_overbought_score':0,'rsi_weights':{'5':.4,'15':.4,'30':.2},
+            'latest_asof':'2026-11-08T15:00:00-05:00','frames':{},'absorption':'承接偏弱'}}
+        positions={'SMH':{'available':True,'quote_stale':False,'price':80,'percentile':3.2,'asof':'2026-11-06'}}
+        env=event_risk.trading_environment(m,risks,intraday=minute,live_positions=positions)
+        self.assertEqual(env['SMH']['label'],'短线超卖且历史极低，可小额分批')
+        self.assertEqual(env['SMH']['rsi_weights'],{'5':.4,'15':.4,'30':.2})
+        self.assertAlmostEqual(env['SMH']['history_tail_pct'],3.2)
+        stale=event_risk.trading_environment(m,risks,intraday=minute,
+            live_positions={'SMH':{**positions['SMH'],'quote_stale':True}})
+        self.assertEqual(stale['SMH']['label'],'报价时间未确认，短线动作待更新')
+
+    def test_rsi_oversold_without_historical_low_position_is_not_a_buy_signal(self):
+        m=self.model();risks=event_risk.assess_events([],now=self.now)
+        minute={'SMH':{'available':True,'stale':False,'rsi_oversold_score':.8,'rsi_overbought_score':0}}
+        positions={'SMH':{'available':True,'quote_stale':False,'price':80,'percentile':42.0}}
+        env=event_risk.trading_environment(m,risks,intraday=minute,live_positions=positions)
+        self.assertEqual(env['SMH']['label'],'短线超卖，历史位置未到极低')
+
 
 class TwoMarketModelTests(unittest.TestCase):
     def history(self,ticker,values):

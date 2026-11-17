@@ -55,5 +55,17 @@ class EventIntelligenceTests(unittest.TestCase):
         self.assertEqual(result['direction'],'事实争议，待核验')
         self.assertIn('不能把单一项目调整',result['conclusion'])
 
+    def test_ai_infrastructure_deployment_is_not_generic_headline_noise(self):
+        title='NVIDIA and Lambda deploy co-packaged optics for AI datacenters'
+        body=('NVIDIA and Lambda said co-packaged optics will be deployed across new AI datacenter clusters. '
+              'Initial deployment focuses on high bandwidth links, with staged delivery over the coming year. ')*4
+        article={'title':title,'summary':'Deployment begins in new AI datacenters.','source':'NVIDIA Developer',
+                 'publisher':'NVIDIA','label':'偏正面','published':datetime.now(timezone.utc).isoformat(),
+                 'tickers':['NVDA'],'independent_publishers':['NVIDIA']}
+        result=assess(article,body,'https://developer.nvidia.com/blog/cpo-deployment',None,[])
+        self.assertEqual(result['event_type'],'AI部署')
+        self.assertIn('部署进展',result['conclusion'])
+        self.assertEqual(result['factors']['来源'],20)
+
 
 if __name__=='__main__': unittest.main()

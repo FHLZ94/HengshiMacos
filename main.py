@@ -16,26 +16,32 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=str(APP_DIR / 'application.log'), level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s', encoding='utf-8')
 DB = APP_DIR / 'events.sqlite3'
-APP_VERSION = '1.3.1'
+APP_VERSION = '1.3.2'
 CONFIG = APP_DIR / 'settings.json'
 ICON = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'nexus.ico'
 DEFAULT_WATCHLIST = list(securities.DEFAULT_TRACKING)
 FEEDS = [
-    ('Google News · World Markets', 'https://news.google.com/rss/search?q=global+markets+OR+Federal+Reserve+OR+Treasury+OR+tariffs&hl=en-US&gl=US&ceid=US:en'),
-    ('Google News · AI Infrastructure', 'https://news.google.com/rss/search?q=AI+datacenter+capex+OR+cloud+compute+OR+semiconductor+orders&hl=en-US&gl=US&ceid=US:en'),
-    ('Google News · Geopolitics', 'https://news.google.com/rss/search?q=US+China+trade+export+controls+OR+geopolitical+risk&hl=en-US&gl=US&ceid=US:en'),
+    ('Google News · AI infrastructure', 'https://news.google.com/rss/search?q='+quote('(AI OR semiconductor OR data center) (capex OR demand OR supply OR orders) when:3d')+'&hl=en-US&gl=US&ceid=US:en'),
+    ('Google News · CPO and optical interconnect', 'https://news.google.com/rss/search?q='+quote('("co-packaged optics" OR CPO OR "optical I/O" OR "silicon photonics") (NVIDIA OR Lambda OR datacenter OR AI) when:7d')+'&hl=en-US&gl=US&ceid=US:en'),
+    ('Google News · AI chip policy', 'https://news.google.com/rss/search?q='+quote('(AI OR semiconductor OR chip) (export controls OR export ban OR tariff OR White House OR Congress OR Senate) when:3d')+'&hl=en-US&gl=US&ceid=US:en'),
+    ('Google News · hyperscaler capex', 'https://news.google.com/rss/search?q='+quote('(Microsoft OR Amazon OR Google OR Oracle OR Meta) (AI data center OR capex OR compute capacity) when:3d')+'&hl=en-US&gl=US&ceid=US:en'),
+    ('Google News · semiconductor supply chain', 'https://news.google.com/rss/search?q='+quote('(HBM OR CoWoS OR advanced packaging OR foundry OR accelerator) (NVIDIA OR TSMC OR SK Hynix OR Micron) when:3d')+'&hl=en-US&gl=US&ceid=US:en'),
+    ('White House · Presidential Actions', 'https://www.whitehouse.gov/presidential-actions/feed/'),
     ('Federal Reserve · Press Releases', 'https://www.federalreserve.gov/feeds/press_all.xml'),
     ('SEC · Press Releases', 'https://www.sec.gov/news/pressreleases.rss'),
-    ('Google News · Semiconductor Leaders', 'https://news.google.com/rss/search?q='+quote('NVIDIA OR AMD OR TSMC OR ASML earnings guidance export controls')+'&hl=en-US&gl=US&ceid=US:en'),
-    ('Google News · AI Compute Leaders', 'https://news.google.com/rss/search?q='+quote('Broadcom OR Marvell OR Intel OR Micron AI chip datacenter guidance')+'&hl=en-US&gl=US&ceid=US:en'),
-    ('Google News · Optical Interconnect', 'https://news.google.com/rss/search?q='+quote('Coherent OR Lumentum OR Arista optical interconnect datacenter')+'&hl=en-US&gl=US&ceid=US:en'),
-    ('Google News · Memory Leaders', 'https://news.google.com/rss/search?q='+quote('SK Hynix OR Samsung OR Micron HBM memory AI')+'&hl=en-US&gl=US&ceid=US:en'),
+    ('NVIDIA Developer · AI and GPU', 'https://developer.nvidia.com/blog/feed/'),
+    ('OpenAI · Newsroom', 'https://openai.com/news/rss.xml'),
+    ('Google · Official Blog', 'https://blog.google/rss/'),
+    ('Microsoft · Official Blog', 'https://blogs.microsoft.com/feed/'),
+    ('CNBC · Technology', 'https://www.cnbc.com/id/19854910/device/rss/rss.html'),
+    ('CNBC · Markets', 'https://search.cnbc.com/rs/search/combinedcms/view.xml?partnerId=wrss01&id=100003114'),
+    ('SemiAnalysis · Industry Research', 'https://www.semianalysis.com/feed'),
+    ('SemiWiki · Semiconductor', 'https://semiwiki.com/feed/'),
     ('New York Times · Business', 'https://rss.nytimes.com/services/xml/rss/nyt/Business.xml'),
     ('Bloomberg · Markets', 'https://feeds.bloomberg.com/markets/news.rss'),
     ('Seeking Alpha · Market Currents', 'https://seekingalpha.com/market_currents.xml'),
     ('Investing · Markets', 'https://www.investing.com/rss/news_25.rss'),
-    ('Google News · CNBC Tech', 'https://news.google.com/rss/search?q='+quote('site:cnbc.com/technology AI OR semiconductor OR data center')+'&hl=en-US&gl=US&ceid=US:en'),
-    ('Google News · Reuters Markets', 'https://news.google.com/rss/search?q='+quote('site:reuters.com/markets AI chip OR Fed OR policy')+'&hl=en-US&gl=US&ceid=US:en'),
+    ('Google News · Reuters and global policy', 'https://news.google.com/rss/search?q='+quote('(site:reuters.com OR site:bloomberg.com OR site:cnbc.com) (AI chip OR semiconductor OR Federal Reserve OR export controls) when:3d')+'&hl=en-US&gl=US&ceid=US:en'),
 ]
 
 POS = {'beats','raise','raised','upgrade','surge','growth','record','strong','accelerate','demand','订单','增长','上调','突破','创新高','扩产','合作','获批','盈利'}
@@ -127,6 +133,12 @@ def save_snapshot(quotes, health, estimates=(), histories=(), comparisons=()):
                 old_day=data_service._quote_date(old.get('asof'))
                 new_day=data_service._quote_date(row.get('asof'))
                 if old_day and new_day and old_day>new_day:continue
+                if (old_day==new_day and old.get('is_realtime') and not row.get('is_realtime')
+                    and old.get('session')=='regular' and row.get('session')=='regular'):
+                    old_time=data_service.quote_observation_time(old.get('source_time') or old.get('asof'))
+                    new_time=data_service.quote_observation_time(row.get('source_time') or row.get('asof'))
+                    if old_time is None or new_time is None or new_time<=old_time:
+                        row={**row,**old}
                 # A temporary extended-session outage must not roll the screen
                 # backwards from a known later trade to the same day's close.
                 if old_day==new_day and old.get('session')=='post' and row.get('session') not in ('post',) and row.get('market_status')!='Open':
@@ -389,8 +401,9 @@ def extract_tickers(text, watchlist):
     return data_service.ticker_matches(text, watchlist)
 
 
-def fetch_news(watchlist, config):
-    rows, health = data_service.fetch_news(watchlist, FEEDS, config, sentiment_score, impact_level)
+def fetch_news(watchlist, config, on_batch=None):
+    rows, health = data_service.fetch_news(watchlist, FEEDS, config, sentiment_score, impact_level,
+                                           on_batch=on_batch)
     save_events(rows)
     return rows, health
 

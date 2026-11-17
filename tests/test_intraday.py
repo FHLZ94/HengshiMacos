@@ -43,6 +43,21 @@ class IntradayTests(unittest.TestCase):
         self.assertEqual(hourly[-1]['end']-hourly[-1]['time'],1800)
         incomplete=intraday_signals.resample(bars[:2]+bars[3:],60)
         self.assertEqual(len(incomplete),13)
+
+    def test_extended_hours_are_aggregated_as_separate_sessions(self):
+        start=datetime(2026,11,2,4,0,tzinfo=ZoneInfo('America/New_York'))
+        bars=[]
+        for session,clock,count in (('盘前',(4,0),22),('常规',(9,30),26),('盘后',(16,0),16)):
+            base=start.replace(hour=clock[0],minute=clock[1])
+            for index in range(count):
+                stamp=int((base+timedelta(minutes=index*15)).timestamp())
+                close=100+index*.01
+                bars.append({'time':stamp,'end':stamp+900,'session':session,'open':close,
+                    'high':close+.5,'low':close-.5,'close':close,'volume':1000})
+        hourly=intraday_signals.resample(bars,60)
+        self.assertEqual(len(hourly),17)
+        self.assertEqual({bar['session'] for bar in hourly},{'盘前','常规','盘后'})
+        self.assertEqual(sum(bar['session_tail'] for bar in hourly),2)
     def test_unfinished_candle_is_excluded_from_provider_response(self):
         bars=self.sessions(5);current=bars[-1]
         p={'chart':{'result':[{'meta':{'symbol':'SMH'},'timestamp':[b['time'] for b in bars],
@@ -51,6 +66,31 @@ class IntradayTests(unittest.TestCase):
         h=intraday_signals.parse_chart(p,'SMH',now)
         self.assertLess(h['bars'][-1]['time'],current['time'])
         self.assertTrue(all(b['time']+900<=now.timestamp() for b in h['bars']))
+
+    def test_chart_parser_keeps_completed_premarket_and_postmarket_bars(self):
+        bars=[]
+        for day in (datetime(2026,11,2,tzinfo=ZoneInfo('America/New_York')),
+                    datetime(2026,11,3,tzinfo=ZoneInfo('America/New_York'))):
+            for hour,minute,count,session in ((4,0,22,'盘前'),(9,30,26,'常规'),(16,0,16,'盘后')):
+                base=day.replace(hour=hour,minute=minute)
+                for index in range(count):
+                    stamp=int((base+timedelta(minutes=index*15)).timestamp());close=100+index*.01
+                    bars.append({'time':stamp,'session':session,'open':close,'high':close+.5,
+                                 'low':close-.5,'close':close,'volume':1000})
+        payload={'chart':{'result':[{'meta':{'symbol':'SMH'},'timestamp':[bar['time'] for bar in bars],
+            'indicators':{'quote':[{key:[bar[key] for bar in bars]
+                for key in ('open','high','low','close','volume')}]}}]}}
+        now=bars[-1]['time']+3600
+        parsed=intraday_signals.parse_chart(payload,'SMH',datetime.fromtimestamp(now,timezone.utc))
+        self.assertEqual(len(parsed['bars']),128)
+        self.assertEqual({bar['session'] for bar in parsed['bars']},{'盘前','常规','盘后'})
+
+    def test_rsi1_preserves_two_decimal_precision_for_dashboard(self):
+        bars=[{**bar,'end':bar['time']+900} for bar in self.sessions()]
+        values=[None]*(len(bars)-1)+[27.726]
+        with patch('intraday_signals.wilder_rsi',return_value=values):
+            result=intraday_signals.frame(bars,15)
+        self.assertEqual(result['rsi1'],27.73)
     def test_overbought_position_is_reported_as_well_as_oversold(self):
         from tests.test_unified_research import TwoMarketModelTests
         make=TwoMarketModelTests().history
@@ -82,6 +122,17 @@ class IntradayTests(unittest.TestCase):
         self.assertEqual(result['bottom_score'],40)
         self.assertEqual(result['weights']['15'],.4)
         self.assertIsNone(result['formation']['probability_pct'])
+
+    def test_five_and_fifteen_minute_rsi_control_short_term_signal(self):
+        def make_frame(bars,minutes):
+            return {'available':True,'minutes':minutes,'bars':100,'rsi1':{5:27.72,15:29.4,30:45.2,60:51.1}[minutes],
+                    'confirmed':False,'candidate':False,'top_confirmed':False,'top_candidate':False,
+                    'absorption':'承接偏弱','asof':'2026-11-17T15:00:00-05:00'}
+        with patch('intraday_signals.frame',side_effect=make_frame), \
+             patch('intraday_signals.confirmation_reference',return_value={'available':False,'probability_pct':None}):
+            result=intraday_signals.analyze({'ticker':'QQQ','bars':self.sessions(),'bars5':self.sessions()})
+        self.assertEqual((result['rsi_5'],result['rsi_15'],result['rsi_30']),(27.72,29.4,45.2))
+        self.assertEqual(result['rsi_signal'],'短线超卖，可小额关注')
 
     def test_existing_confirmed_shape_does_not_become_a_fake_100_percent_forecast(self):
         result=intraday_signals.confirmation_reference(self.double_bottom(),{'confirmed':True})

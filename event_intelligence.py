@@ -23,6 +23,14 @@ MATERIAL_TERMS = {
     '资本开支': ('capital expenditure', 'capex', 'data center spending', 'ai spending'),
     '股权交易': ('shares acquired', 'shares purchased', 'shares bought', 'stake increased',
                'bought shares', 'purchased shares'),
+    'AI部署': ('deployment', 'deployed', 'rollout', 'roll out', 'production ramp',
+              'co-packaged optics', 'silicon photonics', 'optical interconnect', 'optical i/o',
+              'cpo', 'cowos', 'datacenter build', 'data center deployment'),
+    '供需变化': ('supply shortage', 'supply constraint', 'supply bottleneck', 'lead time',
+                'backlog', 'wafer allocation', 'production capacity', 'hbm demand',
+                'capacity expansion', 'shipment delay', 'order backlog'),
+    '合作与订单': ('partnership', 'collaboration', 'joint venture', 'co-development',
+                 'supply agreement', 'contract award', 'customer order', 'purchase commitment'),
 }
 NEGATIONS = re.compile(r'\b(?:not|never|no)\s+(?:\w+\s+){0,3}(?:cancel(?:led|ed)?|terminat(?:e|ed)|cut)\b', re.I)
 DISPUTED_CLAIM = re.compile(r'\b(?:den(?:y|ies|ied)|reject(?:s|ed)?|disput(?:e|es|ed))\b.{0,150}\b(?:cancel|collaps|terminat|scrap|shelv|fell apart|fall through|failed)|\b(?:still on track|not cancelled|not canceled|no cancellation)\b',re.I)
@@ -34,7 +42,11 @@ PORTFOLIO_RE_ALT = re.compile(r'\brepresenting\s+(\d{1,2}(?:\.\d+)?)\s*%\s+of\s+
 PRICE_RE = re.compile(r'\b(?:average (?:purchase|buying) price|purchase price|paid|at a price of|at an average price of)\s*(?:of\s*)?\$\s*(\d[\d,]*(?:\.\d+)?)\s*(?:per share)?', re.I)
 ACTION_RE = re.compile(r'\b(bought|purchased|acquired|added|increased (?:its|their) stake)\b', re.I)
 SENTENCE_RE = re.compile(r'(?<=[.!?])\s+(?=[A-Z0-9])')
-OFFICIAL_HOSTS = ('sec.gov', 'federalreserve.gov', 'investor.', 'ir.')
+OFFICIAL_HOSTS = ('sec.gov', 'federalreserve.gov', 'whitehouse.gov', 'commerce.gov', 'bis.gov',
+                  'investor.', 'ir.', 'nvidianews.nvidia.com', 'nvidia.com', 'openai.com',
+                  'blog.google', 'google.com', 'microsoft.com', 'oracle.com', 'intel.com',
+                  'marvell.com', 'broadcom.com', 'micron.com', 'lumentum.com', 'skhynix.com',
+                  'tsmc.com', 'asml.com', 'amd.com', 'coherent.com')
 PROTECTED_HOSTS = ('reuters.com', 'bloomberg.com', 'seekingalpha.com', 'investing.com')
 
 
@@ -201,10 +213,16 @@ def assess(article, text, resolved_url, body_error, histories):
     facts = key_facts(basis,article.get('title') or '')
     event_type = classify_materiality(article.get('title') or '',basis)
     source = (article.get('publisher') or article.get('source') or '').lower()
-    official = any(host in (resolved_url or '').lower() for host in OFFICIAL_HOSTS)
-    source_score = 20 if official else 15 if any(name in source for name in ('reuters', 'bloomberg', 'cnbc', 'new york times')) else 10 if source else 5
+    resolved_lower=(resolved_url or '').lower()
+    official = 'news.google.com' not in resolved_lower and any(host in resolved_lower for host in OFFICIAL_HOSTS)
+    source_score = (20 if official else
+                    15 if any(name in source for name in ('reuters','bloomberg','cnbc','new york times',
+                                                           'seeking alpha','marketwatch','financial times')) else
+                    13 if any(name in source for name in ('semianalysis','semiwiki','eetimes','lightreading')) else
+                    10 if source else 5)
     material_score = {'合同变化': 30, '业绩预期': 27, '政策监管': 30,
-                      '资本开支': 20, '股权交易': 12}.get(event_type, 6)
+                      '资本开支': 20, '股权交易': 12, 'AI部署': 22,
+                      '供需变化': 24, '合作与订单': 18}.get(event_type, 6)
     specifics = sum(value is not None for value in (facts['share_count'], facts['ownership_pct'],
                                                    facts['portfolio_weight_pct'], facts['purchase_price']))
     specificity_score = min(20, specifics*5 + (6 if complete else 0))
@@ -249,6 +267,15 @@ def assess(article, text, resolved_url, body_error, histories):
     elif event_type=='资本开支':
         conclusion=(f'{factual}，主要涉及资本开支。'
                     '应区分计划、已签合同与实际交付金额，再评估算力需求及相关供应商受益程度。')
+    elif event_type=='AI部署':
+        conclusion=(f'{factual}，涉及AI算力、数据中心或高速互联的部署进展。'
+                    '判断影响时应核对部署范围、上线节奏、交付规模及是否转化为订单或收入。')
+    elif event_type=='供需变化':
+        conclusion=(f'{factual}，涉及半导体或AI基础设施的供需、产能或交付变化。'
+                    '重点看变化影响的产品、客户、时间范围和可量化订单，不把行业需求直接等同于单一公司收入。')
+    elif event_type=='合作与订单':
+        conclusion=(f'{factual}，涉及合作、供货或客户订单。'
+                    '需区分合作意向、已签合同与已确认收入，并核对金额、交付期限和双方公告。')
     else:
         conclusion=(f'{factual}，目前缺少足以改变盈利预期或估值的具体事实。'
                     '该事件暂列跟踪，不单独形成交易动作。')

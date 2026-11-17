@@ -12,6 +12,7 @@ import sys
 import threading
 import time
 import webbrowser
+from zoneinfo import ZoneInfo
 
 import requests
 
@@ -35,6 +36,7 @@ from translation_service import TranslationStore
 APP_NAME = '衡势'
 ASSETS = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'frontend'
 LOCAL_TZ = timezone(timedelta(hours=8))
+NEW_YORK = ZoneInfo('America/New_York')
 MARKET_SAMPLE=('IWM','RSP','XLF','XLE','XLI','XLY')
 HISTORY_EXTRA=tuple(dict.fromkeys((*MARKET_SAMPLE,*data_service.SECTOR_TICKERS)))
 MODEL_INPUTS=securities.MODEL_INPUTS
@@ -50,6 +52,43 @@ def full_local_time(value):
     if not value:return '时间未提供'
     try:return datetime.fromisoformat(value).astimezone(LOCAL_TZ).strftime('%Y-%m-%d %H:%M')
     except (ValueError,TypeError):return str(value)[:19]
+
+
+def quote_time_label(value):
+    if not value:return '时间未提供'
+    raw=str(value).strip()
+    if re.fullmatch(r'\d{4}-\d{2}-\d{2}',raw):return raw[5:]+' 日期报价'
+    try:
+        parsed=datetime.fromisoformat(raw.replace('Z','+00:00'))
+        if parsed.tzinfo is None:parsed=parsed.replace(tzinfo=NEW_YORK)
+        return parsed.astimezone(LOCAL_TZ).strftime('%m-%d %H:%M 北京时间')
+    except ValueError:pass
+    clean=re.sub(r'\s+(?:ET|EST|EDT)$','',raw,flags=re.I)
+    formats=('%b %d, %Y %I:%M:%S %p','%b %d, %Y %I:%M %p',
+             '%m/%d/%y %I:%M:%S %p','%m/%d/%y %I:%M %p',
+             '%m/%d/%Y %I:%M:%S %p','%m/%d/%Y %I:%M %p','%b %d, %Y')
+    for fmt in formats:
+        try:
+            parsed=datetime.strptime(clean,fmt).replace(tzinfo=NEW_YORK)
+            return parsed.astimezone(LOCAL_TZ).strftime('%m-%d %H:%M 北京时间' if '%I' in fmt else '%m-%d 日期报价')
+        except ValueError:continue
+    try:return datetime.strptime(raw[:10],'%Y-%m-%d').strftime('%m-%d 日期报价')
+    except ValueError:return raw[:24]
+
+
+def quote_is_stale(quote,now=None):
+    if not quote:return True
+    now=(now or datetime.now(timezone.utc)).astimezone(NEW_YORK)
+    minute=now.hour*60+now.minute
+    active=now.weekday()<5 and 240<=minute<1200
+    observed=data_service.quote_observation_time(quote.get('source_time') or quote.get('asof'))
+    if observed is None:return bool(active)
+    observed=observed.astimezone(NEW_YORK)
+    age=(now-observed).total_seconds()
+    if age<0:age=0
+    if active:
+        return observed.date()!=now.date() or age>35*60
+    return age>18*3600
 
 
 def trade_date(value):
@@ -74,6 +113,21 @@ def source_name(value):
            'Google News · World Markets':'全球市场聚合',
            'Google News · AI Infrastructure':'人工智能与算力聚合',
            'Google News · Geopolitics':'全球政策聚合',
+           'Google News · AI infrastructure':'AI基础设施聚合',
+           'Google News · CPO and optical interconnect':'共封装光学与光互连聚合',
+           'Google News · AI chip policy':'AI芯片政策聚合',
+           'Google News · hyperscaler capex':'云厂商资本开支聚合',
+           'Google News · semiconductor supply chain':'半导体供应链聚合',
+           'Google News · Reuters and global policy':'路透与全球政策检索',
+           'White House · Presidential Actions':'白宫总统行动',
+           'NVIDIA Developer · AI and GPU':'英伟达开发者技术博客',
+           'OpenAI · Newsroom':'OpenAI 官方新闻室',
+           'Google · Official Blog':'Google 官方博客',
+           'Microsoft · Official Blog':'微软官方博客',
+           'CNBC · Technology':'CNBC 科技',
+           'CNBC · Markets':'CNBC 市场',
+           'SemiAnalysis · Industry Research':'SemiAnalysis 半导体研究',
+           'SemiWiki · Semiconductor':'SemiWiki 半导体行业',
            'Google News · Semiconductor Leaders':'半导体龙头新闻聚合',
            'Google News · AI Compute Leaders':'人工智能算力新闻聚合',
            'Google News · Optical Interconnect':'光通信新闻聚合',
@@ -146,9 +200,31 @@ def merge_news(existing,incoming,limit=400):
         if old:
             publishers=set(old.get('independent_publishers') or [])
             publishers.update(row.get('independent_publishers') or [])
-            row['independent_publishers']=sorted(publishers)
-        combined[key]=row
+            old_rank=data_service.source_rank(old)
+            new_rank=data_service.source_rank(row)
+            canonical=row if (new_rank, row.get('published',''))>(old_rank,old.get('published','')) else old
+            canonical={**canonical,'independent_publishers':sorted(publishers)}
+            if not canonical.get('source_tier'):
+                canonical['source_tier']=data_service.source_tier(canonical.get('source',''),
+                    canonical.get('publisher',''),canonical.get('link',''))
+            combined[key]=canonical
+        else:
+            row.setdefault('source_tier',data_service.source_tier(row.get('source',''),
+                row.get('publisher',''),row.get('link','')))
+            combined[key]=row
     return sorted(combined.values(),key=lambda row:row.get('published',''),reverse=True)[:limit]
+
+
+def wilder_rsi(closes,period=14):
+    if len(closes)<=period:return None
+    changes=[float(closes[index])-float(closes[index-1]) for index in range(1,len(closes))]
+    gain=sum(max(delta,0) for delta in changes[:period])/period
+    loss=sum(max(-delta,0) for delta in changes[:period])/period
+    for delta in changes[period:]:
+        gain=(gain*(period-1)+max(delta,0))/period
+        loss=(loss*(period-1)+max(-delta,0))/period
+    if loss==0:return 100.0 if gain>0 else 50.0
+    return 100.0-100.0/(1.0+gain/loss)
 
 
 class DesktopAPI:
@@ -170,6 +246,8 @@ class DesktopAPI:
         self.fund_valuations=main.load_market_extra('fund_valuations') or {}
         self.pe_histories=main.load_market_extra('historical_pe_medians') or {}
         self.intraday_histories=main.load_market_extra('intraday_history') or {}
+        self.intraday_health={}
+        self.intraday_status='等待分钟行情'
         self._intraday_cache_key=None;self._intraday_cache={}
         cached_model=main.load_market_extra('market_model_v2') or {}
         self._model_key=cached_model.get('input_key')
@@ -183,8 +261,9 @@ class DesktopAPI:
         self.busy=False
         self.quote_busy=False
         self.public_busy=False
+        self.translation_requested=False
         self.last_public_check=0
-        self.intraday_busy=False;self.last_intraday_check=0
+        self.intraday_busy=False;self.intraday_pending=False;self.last_intraday_check=0
         self.search_busy=False
         self.search_status=''
         self.search_result_count=0
@@ -220,24 +299,42 @@ class DesktopAPI:
             if time.monotonic()-self.last_public_check>=120:self._refresh_public_async()
             if time.monotonic()-self.last_intraday_check>=120:self._refresh_intraday_async()
 
-    def _refresh_intraday_async(self):
+    def _refresh_intraday_async(self,force=False):
         with self.lock:
-            if self.intraday_busy:return
-            self.intraday_busy=True;config=copy.deepcopy(self.settings)
+            if self.intraday_busy:
+                if force:self.intraday_pending=True
+                return
+            self.intraday_busy=True;self.intraday_status='正在更新分钟行情';config=copy.deepcopy(self.settings)
+            self.revision+=1
         def work():
             try:
                 rows,health=intraday_signals.fetch(config)
-                if rows:
-                    with self.lock:
+                with self.lock:
+                    self.intraday_health=health or {}
+                    if rows:
                         for ticker,row in rows.items():
                             old=self.intraday_histories.get(ticker,{})
                             merged={b['time']:b for b in old.get('bars',[])}
                             merged.update({b['time']:b for b in row.get('bars',[])})
                             self.intraday_histories[ticker]={**row,'bars':sorted(merged.values(),key=lambda b:b['time'])[-13000:]}
-                        main.save_market_extra('intraday_history',self.intraday_histories);self.revision+=1
-            except Exception:logging.exception('Intraday refresh failed')
+                        main.save_market_extra('intraday_history',self.intraday_histories)
+                        self.intraday_status='分钟行情已更新'
+                    else:
+                        self.intraday_status='分钟行情暂不可用，保留上次完整数据'
+                    self.revision+=1
+            except Exception:
+                logging.exception('Intraday refresh failed')
+                with self.lock:
+                    self.intraday_status='分钟行情更新失败，保留上次完整数据'
+                    self.revision+=1
             finally:
-                with self.lock:self.intraday_busy=False;self.last_intraday_check=time.monotonic()
+                with self.lock:
+                    self.intraday_busy=False
+                    self.last_intraday_check=time.monotonic()
+                    self.revision+=1
+                    pending=self.intraday_pending
+                    self.intraday_pending=False
+                if pending:self._refresh_intraday_async()
         threading.Thread(target=work,daemon=True).start()
 
     def _refresh_public_async(self):
@@ -276,7 +373,7 @@ class DesktopAPI:
     def refresh(self):
         self._start_model(force=True)
         self._refresh_public_async()
-        self._refresh_intraday_async()
+        self._refresh_intraday_async(force=True)
         with self.lock:
             if self.busy:return {'ok':True,'message':'已重新计算本地行情，网络同步正在进行'}
             self.busy=True;self.status='正在更新行情与研判';self.revision+=1
@@ -328,7 +425,7 @@ class DesktopAPI:
                       pool.submit(reference_data.fetch_histories,config['watchlist'],config):'pe_history',
                       pool.submit(data_service.fetch_cnn_fear_greed,config):'cnn',
                       pool.submit(data_service.fetch_sp500_breadth,config):'breadth',
-                      pool.submit(main.fetch_news,config['watchlist'],config):'news'}
+                      pool.submit(main.fetch_news,config['watchlist'],config,self._apply_news_batch):'news'}
                 for future in as_completed(jobs):
                     kind=jobs[future]
                     try:
@@ -381,10 +478,20 @@ class DesktopAPI:
 
     def _start_translation(self):
         with self.lock:
-            if self.translating:return
+            if self.translating:
+                self.translation_requested=True
+                return
             self.translating=True
-            prioritized=sorted(self.news,key=lambda article:article.get('published',''),reverse=True)
-            texts=[article['title'] for article in prioritized if article['title']]
+            held=set(self.holding_flags)|{row['ticker'] for row in self.positions}
+            grade_rank={'S1':4,'S2':3,'S3':2,'S4':1}
+            prioritized=sorted(self.news,key=lambda article:(
+                grade_rank.get(article.get('grade') or data_service.event_profile(
+                    article.get('source',''),article.get('title',''),article.get('impact','低'))[0],0),
+                bool(held.intersection(article.get('tickers',[]))),
+                len(article.get('independent_publishers') or []),
+                data_service.source_rank(article),article.get('published','')),reverse=True)
+            texts=[text for article in prioritized[:80]
+                   for text in (article.get('title',''),article.get('summary','')) if text]
             config=copy.deepcopy(self.settings)
         last_report=[0.0]
         def progress(done,total):
@@ -401,9 +508,20 @@ class DesktopAPI:
             finally:
                 with self.lock:
                     self.translating=False
+                    pending=self.translation_requested
+                    self.translation_requested=False
                     self.status='中文信息已更新' if self.news else self.status
                     self.revision+=1
+                if pending:self._start_translation()
         threading.Thread(target=work,daemon=True).start()
+
+    def _apply_news_batch(self,rows):
+        if not rows:return
+        with self.lock:
+            self.news=merge_news(self.news,rows)
+            self.revision+=1
+        self._start_translation()
+        self._start_priority_analysis()
 
     def _start_priority_analysis(self):
         now=datetime.now(timezone.utc)
@@ -455,6 +573,48 @@ class DesktopAPI:
         self._analyze_article(article)
         with self.lock:result=self.event_analysis.get(event_url)
         return {'ok':bool(result),'analysis':result,'message':'已完成原文核验' if result else '原文分析暂不可用'}
+
+    def get_market_slots(self):
+        path=main.APP_DIR/'market_slots.json'
+        try:
+            payload=json.loads(path.read_text(encoding='utf-8'))
+            slots=payload.get('slots')
+            if isinstance(slots,list) and len(slots)<=4 and all(
+                isinstance(ticker,str) and re.fullmatch(r'[A-Z0-9.^-]{1,15}',ticker) for ticker in slots
+            ) and len(set(slots))==len(slots):
+                return {'ok':True,'slots':slots}
+        except (OSError,ValueError,TypeError,AttributeError):
+            pass
+        return {'ok':True,'slots':['QQQ','SPY','SMH','ORCL']}
+
+    def save_market_slots(self,slots):
+        if not isinstance(slots,list) or len(slots)>4:
+            return {'ok':False,'message':'研判标的最多四个'}
+        cleaned=[str(ticker).strip().upper() for ticker in slots]
+        if any(not re.fullmatch(r'[A-Z0-9.^-]{1,15}',ticker) for ticker in cleaned) or len(set(cleaned))!=len(cleaned):
+            return {'ok':False,'message':'证券代码无效或重复'}
+        path=main.APP_DIR/'market_slots.json'
+        temporary=path.with_suffix('.json.tmp')
+        try:
+            path.parent.mkdir(parents=True,exist_ok=True)
+            temporary.write_text(json.dumps({'slots':cleaned},ensure_ascii=False),encoding='utf-8')
+            temporary.replace(path)
+            return {'ok':True,'slots':cleaned}
+        except OSError:
+            return {'ok':False,'message':'研判位保存失败'}
+
+    def get_market_rsi(self,ticker,asof):
+        ticker=str(ticker).strip().upper()
+        if not re.fullmatch(r'[A-Z0-9.^-]{1,15}',ticker) or not re.fullmatch(r'\d{4}-\d{2}-\d{2}',str(asof)):
+            return {'ok':False,'message':'证券代码或日期无效'}
+        with self.lock:
+            history=next((row for row in self.histories if row.get('ticker')==ticker),None)
+        if not history:return {'ok':False,'message':'该标的历史日线尚未缓存'}
+        bars=[bar for bar in history.get('bars',[]) if bar.get('date','')<=asof
+              and isinstance(bar.get('close'),(int,float)) and bar['close']>0]
+        value=wilder_rsi([bar['close'] for bar in bars])
+        if value is None:return {'ok':False,'message':'RSI14 样本不足'}
+        return {'ok':True,'rsi14':round(value,2),'asof':bars[-1]['date'],'bars':len(bars)}
 
     def search_global_news(self,query):
         query=' '.join(str(query).split())[:120]
@@ -517,6 +677,8 @@ class DesktopAPI:
             search_busy=self.search_busy;search_status=self.search_status;search_result_count=self.search_result_count
             search_query=self.search_query;search_urls=set(self.last_search_urls)
             analyses=dict(self.event_analysis)
+            intraday_busy=self.intraday_busy;intraday_status=self.intraday_status
+            intraday_health=copy.deepcopy(self.intraday_health)
             proxy=self.settings.get('https_proxy','')
             security_config=copy.deepcopy(self.settings)
             tracking_sync=dict(self.tracking_sync)
@@ -541,10 +703,13 @@ class DesktopAPI:
                 'published':local_time(article.get('published')),
                 'published_full':full_local_time(article.get('published')),
                 'published_raw':article.get('published',''),'grade':grade,'direction':article['label'],
+                'source_tier':article.get('source_tier') or data_service.source_tier(
+                    article.get('source',''),article.get('publisher',''),article.get('link','')),
                 'credibility':article.get('credibility') or data_service.event_profile(article['source'],article['title'],article['impact'])[1],
                 'horizon':article.get('horizon') or '待评估','tickers':article['tickers'],
                 'topics':topics,'impact_note':impact_note,
                 'independent_publishers':article.get('independent_publishers') or [],
+                'corroboration_count':len(article.get('independent_publishers') or []),
                 'url':article['link'],'translated':article['title'] in translated})
             public_news[-1]['analysis']=analyses.get(article['link'])
             public_news[-1]['live_match']=article['link'] in search_urls
@@ -552,6 +717,27 @@ class DesktopAPI:
         estimate_map={item['ticker']:item for item in estimates}
         history_map={item['ticker']:item for item in histories}
         comparison_map={item['ticker']:item for item in comparisons}
+        live_quotes={};live_positions={}
+        for ticker in ('QQQ','SPY','SMH','ORCL'):
+            quote=quote_map.get(ticker)
+            target=(model_result or {}).get('targets',{}).get(ticker,{})
+            history=history_map.get(ticker)
+            if quote:
+                quote_stale=quote_is_stale(quote)
+                live_quotes[ticker]={'price':quote.get('price'),'change':quote.get('change'),
+                    'label':'实时成交' if quote.get('is_realtime') else quote.get('price_label','最近可得报价'),
+                    'asof':quote_time_label(quote.get('source_time') or quote.get('asof')),
+                    'source':source_name(quote.get('source','')),'is_realtime':bool(quote.get('is_realtime')),
+                    'stale':quote_stale,
+                    'market_status':quote.get('market_status'),'session':quote.get('session'),
+                    'fetched_at':local_time(quote.get('fetched_at'))}
+                live_positions[ticker]=market_model.live_price_position(
+                    history,quote.get('price'),target.get('date'))
+                live_positions[ticker]['quote_stale']=quote_stale
+            else:
+                live_quotes[ticker]={'price':None,'label':'报价待同步','asof':'时间未提供',
+                                     'source':'来源暂不可用','is_realtime':False}
+                live_positions[ticker]={'available':False,'reason':'最新报价待同步'}
         one_year=main.one_year_ntm_average()
         metrics={}
         for ticker,history in history_map.items():
@@ -648,11 +834,25 @@ class DesktopAPI:
             self._intraday_cache_key=minute_key
         minute_signals=copy.deepcopy(self._intraday_cache)
         for signal in minute_signals.values():
-            ends=[v['asof'] for v in signal['frames'].values() if v.get('available')]
+            ends=[v['asof'] for v in signal['frames'].values() if v.get('available') and v.get('asof')]
             if ends:
-                signal['stale']=(datetime.now(timezone.utc)-datetime.fromisoformat(max(ends))).days>5
-                if signal['stale']:signal['available']=False
-        environment=event_risk.trading_environment(model_result,risks,live_metrics,minute_signals)
+                latest=max(ends)
+                age=max(0,(datetime.now(timezone.utc)-datetime.fromisoformat(latest)).total_seconds())
+                now_ny=datetime.now(timezone.utc).astimezone(NEW_YORK)
+                minute_of_day=now_ny.hour*60+now_ny.minute
+                in_regular_session=now_ny.weekday()<5 and 570<=minute_of_day<960
+                in_market_session=now_ny.weekday()<5 and 240<=minute_of_day<1200
+                signal['latest_asof']=latest
+                signal['stale']=bool(in_market_session and age>35*60)
+                signal['outside_regular_session']=not in_regular_session
+                for frame_data in signal['frames'].values():
+                    if frame_data.get('asof'):
+                        frame_data['age_minutes']=round(max(0,(datetime.now(timezone.utc)-
+                            datetime.fromisoformat(frame_data['asof'])).total_seconds())/60,1)
+        for ticker,metric in live_metrics.items():
+            quote=quote_map.get(ticker)
+            if quote:metric['quote_stale']=quote_is_stale(quote)
+        environment=event_risk.trading_environment(model_result,risks,live_metrics,minute_signals,live_positions)
         observation_key=(datetime.now(timezone.utc).strftime('%Y-%m-%dT%H'),(model_result or {}).get('date'),
                          tuple((e['url'],e['stage'],e['direction'],e['verified']) for e in risks['events']),
                          tuple((t,tuple((k,v.get('asof')) for k,v in m.get('frames',{}).items())) for t,m in minute_signals.items()))
@@ -667,13 +867,17 @@ class DesktopAPI:
                           'vix':quote_map.get('^VIX'),'qqq':metrics.get('QQQ'),'smh':metrics.get('SMH'),
                           'spy':metrics.get('SPY'),'series':series,'model':model_result,'model_busy':model_busy,
                           'rotation':{'5':sector_rotation.rotation(histories,5),'20':sector_rotation.rotation(histories,20)},
-                          'assessment':market_assessment,'event_risk':risks,'environment':environment,'intraday':minute_signals},
+                          'assessment':market_assessment,'event_risk':risks,'environment':environment,
+                          'intraday':minute_signals,'intraday_busy':intraday_busy,
+                          'intraday_status':intraday_status,'intraday_health':intraday_health,
+                          'live_quotes':live_quotes,'live_positions':live_positions},
                 'health':[{'source':source_name(h['source']),'status':'正常' if h['status']=='ok' else health_reason(h.get('reason') or h['status']),
                            'count':h.get('count'),'checked':local_time(h.get('checked_at'))} for h in health],
                 'settings':{'watchlist':watchlist,'auto_local_proxy':self.settings.get('auto_local_proxy',True),
                             'https_proxy':proxy,'openai_model':self.settings.get('openai_model','qwen3:4b'),
                             'public_post_urls':security_config.get('public_post_urls',[])},
-                'translation_pending':sum(not item['translated'] for item in public_news)}
+                'translation_pending':sum((not item['translated'])+(not item['summary_translated'])
+                                          for item in public_news)}
 
     def save_watchlist(self,raw):
         if isinstance(raw,str):raw=re.split(r'[,，;；\s]+',raw)

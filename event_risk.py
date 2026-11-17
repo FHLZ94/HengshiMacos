@@ -113,43 +113,78 @@ def assess_events(news,analyses=None,now=None):
     return result
 
 
-def trading_environment(model,event_risk,metrics=None,intraday=None):
-    metrics=metrics or {};result={}
+def trading_environment(model,event_risk,metrics=None,intraday=None,live_positions=None):
+    metrics=metrics or {};intraday=intraday or {};live_positions=live_positions or {};result={}
     for ticker,data in (model or {}).get('targets',{}).items():
         setup=data['setup'];risk=event_risk.get(ticker,{'critical_negative':False,'risk_score':0});metric=metrics.get(ticker) or {}
-        minute=(intraday or {}).get(ticker) or {}
+        minute=intraday.get(ticker) or {};position=live_positions.get(ticker) or {}
+        minute_fresh=bool(minute.get('available') and not minute.get('stale'))
+        has_live_position_snapshot=ticker in live_positions
+        quote_stale=bool(position.get('quote_stale'))
+        uses_live_position=bool(position.get('available') and not quote_stale)
+        history_rank=float(position['percentile']) if uses_live_position else float(setup.get('lower_tail_pct',50))
+        oversold_score=minute.get('rsi_oversold_score') if minute_fresh else None
+        overbought_score=minute.get('rsi_overbought_score') if minute_fresh else None
+        oversold_confirmed=oversold_score is not None and oversold_score>=.8
+        overbought_confirmed=overbought_score is not None and overbought_score>=.8
         stage=market_stage(setup,minute)
+        if uses_live_position:
+            if history_rank<=5:stage='最新价处历史极低位'
+            elif history_rank<=15:stage='最新价处历史偏低位'
+            elif history_rank>=95:stage='最新价处历史极高位'
+            elif history_rank>=85:stage='最新价处历史偏高位'
+            else:stage='最新价处历史常态区'
         live=metric.get('live_price') or metric.get('price')
         invalid=(metric.get('support20',0)-.75*metric.get('atr14',0)) if metric.get('support20') else None
-        if live and invalid and live<invalid:
+        if live and invalid and not metric.get('quote_stale') and live<invalid:
             label='跌破风险线，先控敞口';reason=f'最近报价已跌破 {invalid:.2f} 的波动调整风险位，等待支撑重建'
         elif risk['critical_negative']:
-            label='先控制事件风险';reason='高影响负面事件有原始证据，超卖不足以抵消政策或盈利风险'
-        elif setup.get('overbought') and minute.get('available') and minute.get('frames',{}).get('30',{}).get('top_confirmed'):
+            label='先控制事件风险';reason='高影响负面事件有原始证据，超卖读数不足以抵消政策或盈利风险'
+        elif has_live_position_snapshot and (quote_stale or not position.get('available')):
+            label='报价时间未确认，短线动作待更新';reason='当前价格来源时间不足或报价已滞后；暂不使用旧价格分位触发盘中买卖参考'
+        elif minute_fresh and history_rank>=85 and overbought_confirmed and minute.get('high_stall_frames'):
+            label='高位超买并滞涨，放缓追价';reason='5/15/30分钟 RSI 加权分达到超买区，最新价同时处历史高位且推进减弱'
+        elif minute_fresh and overbought_confirmed:
+            label='短线超买，避免追价';reason=f'5/15/30分钟 RSI 加权分 {overbought_score:.2f}（权重40%/40%/20%）；结合最新价历史分位 {history_rank:.1f}% 控制追价'
+        elif uses_live_position and minute_fresh and oversold_confirmed and history_rank<=5 and data.get('up3_pct',0)>=50 and risk['risk_score']<30:
+            label='短线超卖且历史极低，可小额分批';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}（权重40%/40%/20%），最新价处历史下侧 {history_rank:.1f}%；三日历史基准不低于50%，仍须遵守失效价'
+        elif uses_live_position and minute_fresh and oversold_confirmed and history_rank<=15 and risk['risk_score']<30:
+            label='短线超卖与历史偏低共振，小额关注';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}，最新价处历史下侧 {history_rank:.1f}%；分批观察，不代表底部确认'
+        elif uses_live_position and minute_fresh and oversold_confirmed:
+            label='短线超卖，历史位置未到极低';reason=f'分钟 RSI 加权超卖分 {oversold_score:.2f}，但最新价历史下侧仅 {history_rank:.1f}%；等待价格位置与承接进一步确认'
+        elif uses_live_position and history_rank<=5 and not oversold_confirmed:
+            label='最新价处历史极低，等待RSI确认';reason=f'最新价历史下侧 {history_rank:.1f}%，5/15分钟 RSI 尚未共同进入超卖区；暂不把低价单独当作买点'
+        elif uses_live_position and history_rank>=95:
+            label='最新价处历史高位，避免追价';reason=f'最新价历史分位 {history_rank:.1f}%；5/15分钟 RSI 与后续承接确认前，不追高'
+        elif uses_live_position and not minute_fresh:
+            label='盘中RSI待更新，暂缓新信号';reason='实时价格与历史位置可用，但分钟RSI数据当前缺失或超过新鲜度阈值；暂不沿用旧短线信号'
+        elif setup.get('overbought') and minute_fresh and minute.get('frames',{}).get('30',{}).get('top_confirmed'):
             label='高位背离，复核敞口';reason='历史高位叠加分钟级顶结构，先核对失效位与止盈条件'
         elif stage=='高位滞涨':
             label='高位滞涨，放缓追价';reason='高位价格推进不足，且出现放量或卖压分歧，等待方向重新确认'
         elif setup.get('overbought'):
             label='偏热拥挤，避免追价';reason=f"历史上侧 {setup.get('upper_tail_pct',0):.1f}%，属于价量过热代理；不等于真实持仓拥挤，也不自动代表即将下跌"
-        elif setup['oversold'] and minute.get('available') and minute.get('frames',{}).get('30',{}).get('confirmed') and minute.get('absorption')=='多周期放量承接' and data['up3_pct']>=50 and risk['risk_score']<30:
+        elif setup['oversold'] and minute_fresh and minute.get('frames',{}).get('30',{}).get('confirmed') and minute.get('absorption')=='多周期放量承接' and data['up3_pct']>=50 and risk['risk_score']<30:
             label='结构修复，分批候选';reason='分钟级底结构与放量承接联动，先小额观察，后续仍须守住风险位'
-        elif setup['oversold'] and setup['recovery_confirmed'] and data['up3_pct']>=50 and not risk['risk_score']>=30:
+        elif setup['oversold'] and setup['recovery_confirmed'] and data['up3_pct']>=50 and risk['risk_score']<30:
             label='小额分批候选';reason='进入历史低位区，且收盘位置与成交量出现修复；仍须守住失效价'
         elif setup['oversold'] and data['up3_pct']<50:
             label='超卖但反弹参考偏弱';reason='三日上涨参考低于50%，价格低位尚未转成反弹优势，等待新确认'
-        elif setup['oversold'] and minute.get('available') and minute.get('frames',{}).get('30',{}).get('confirmed'):
+        elif setup['oversold'] and minute_fresh and minute.get('frames',{}).get('30',{}).get('confirmed'):
             label='底结构修复，量能待确认';reason=minute['resonance']+'；当前'+minute['absorption']+'，先观察短周期能否放量守住低点'
         elif setup['oversold']:
             label='超卖观察，等待承接';reason=f"历史下侧 {setup['lower_tail_pct']:.1f}%，但持续承接尚未确认；避免一次性接满"
         elif setup['lower_tail_pct']>90:
             label='不宜追价';reason='价格处于历史偏高区间，等待回撤或盈利预期进一步兑现'
         else:
-            label='按条件跟踪';reason='尚未同时满足低位与承接条件，结合关注区和失效价评估'
+            label='按条件跟踪';reason='尚未同时满足低位与承接条件，结合关注区、确认行情时间与失效价评估'
         if not event_risk['coverage_fresh']:
             reason+='；情报缓存较旧，先同步新事件'
         result[ticker]={'label':label,'reason':reason,'horizon':'下一交易时段至未来1—3个交易日',
-            'stage':stage,
-            'up3_pct':data['up3_pct'],'oversold':setup['oversold'],'history_tail_pct':setup['lower_tail_pct'],
+            'stage':stage,'up3_pct':data['up3_pct'],'oversold':bool(history_rank<=5 and oversold_confirmed),
+            'history_tail_pct':round(history_rank,1),'rsi_oversold_score':oversold_score,
+            'rsi_overbought_score':overbought_score,'rsi_weights':minute.get('rsi_weights',{'5':.4,'15':.4,'30':.2}),
+            'rsi_asof':minute.get('latest_asof'),'position_asof':position.get('asof'),
             'source_date':data['date'],'risk_score':risk['risk_score']}
     return result
 
