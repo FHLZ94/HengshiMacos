@@ -93,16 +93,20 @@ function marketSignalCard(ticker, model, minute, risk, environment, slotIndex) {
   const ten=target.bottom10 || {};
   const skillLabel=!ten.weights_active?'10日采用历史基准':ten.skill>0?
     `10日样本外 Brier 改善 ${number(ten.skill*100,1)}%`:'10日混合模型未优于基准';
+  const sessionName={pre:'盘前',regular:'常规',post:'盘后'}[liveQuote.session] || '';
+  const dayMove=liveQuote.change==null?'':`日涨跌 ${signed(liveQuote.change)}`;
+  const sessionMove=liveQuote.session_change_pct==null?'':`${sessionName || '时段'} ${signed(liveQuote.session_change_pct)}`;
+  const priceContext=[dayMove,sessionMove].filter(Boolean).join(' · ');
   return `<article class="market-signal ${risk[ticker]?.critical_negative?'risk':''}">
     <div class="signal-top"><div><span class="signal-ticker">${ticker}</span><span class="signal-name">${{QQQ:'纳斯达克100',SMH:'半导体',SPY:'标普500',ORCL:'甲骨文'}[ticker]}</span></div><div class="signal-meta"><span class="signal-status ${signalTone}">短线 · ${escapeHtml(signalLabel)}</span><span class="signal-date">历史日线 ${escapeHtml(model.date)}</span></div></div>
     <div class="market-card-tools"><button type="button" class="market-replace" data-replace-market-slot="${slotIndex}" title="更换研判标的" aria-label="更换 ${ticker}"><i data-lucide="pencil"></i></button><button type="button" class="market-remove" data-remove-market-slot="${slotIndex}" title="从市场研判移除" aria-label="从市场研判移除 ${ticker}"><i data-lucide="x"></i></button></div>
-    <div class="signal-live-quote"><span>最新价格</span><strong>${liveQuote.price==null?'—':'$'+number(liveQuote.price)}</strong><small>${liveQuote.stale?'报价时间待核 · ':''}${escapeHtml(liveQuote.label || '报价待同步')} · ${escapeHtml(liveQuote.asof || '时间未知')}</small></div>
+    <div class="signal-live-quote"><span>${escapeHtml(sessionName || '最新价格')}</span><strong>${liveQuote.price==null?'—':'$'+number(liveQuote.price)}</strong><small>${liveQuote.stale?'报价时间待核 · ':''}${escapeHtml(liveQuote.label || '报价待同步')}${priceContext?' · '+escapeHtml(priceContext):''} · ${escapeHtml(liveQuote.asof || '时间未知')}</small></div>
     <div class="signal-valuation"><div><span>估值判断</span><strong>${valuation.pe!=null?number(valuation.pe,1)+'倍 PE':'PE待数据'}</strong></div><div><span>${ticker==='ORCL'?'统一参考价空间':'十年PE分位'}</span><strong>${ticker==='ORCL'?escapeHtml(valuation.label):valuation.percentile!=null?number(valuation.percentile,1)+'/100':'—'}</strong></div><small>${escapeHtml(ticker==='ORCL'?valuation.source:valuation.label)}</small></div>
     ${ticker==='QQQ'?'<div class="signal-earnings"><span>未来12个月加权盈利增速</span><strong>待计算</strong><small>成分权重与同口径预测覆盖不足</small></div>':'<div class="signal-earnings signal-earnings-placeholder" aria-hidden="true"></div>'}
     <div class="signal-context signal-rsi-context"><span>RSI1 · 5/15分重点</span><span>5分 <b>${rsi(5)}</b></span><span>15分 <b>${rsi(15)}</b></span><span>30分 <b>${rsi(30)}</b></span></div>
     <div class="signal-context"><span>${hasFreshLivePosition?'最新价历史分位':'最近日线历史分位'}</span><span title="当前价相对20日均线偏离，经同期波动率标准化后在已完成日线历史中的分位；不是估值PE分位。">历史下侧 <b>${lower}</b></span><span>${hasFreshLivePosition?'有效样本':'日线RSI14'} <b>${hasFreshLivePosition?number(livePosition.samples,0):number(setup?.rsi14,1)}</b></span></div>
     <div class="signal-position"><span class="signal-position-track" style="--position:${lowerPosition}%"><i></i></span><span>历史低位</span><span>常态</span><span>历史高位</span></div>
-    <div class="signal-prob"><div><span>未来 5 日上涨</span><strong>${number(target.up5_pct,1)}%</strong></div><div><span title="未来10个交易日最低价不低于本日最低价，且第10日收盘高于本日收盘">10 日低点守稳</span><strong>${number(target.bottom10_pct,1)}%</strong></div></div>
+    <div class="signal-prob"><div><span title="以已完成常规交易日收盘为预测起点，按历史未来5个交易日收盘涨跌统计；不是当前盘中入场胜率。">未来 5 日上涨（日线参考）</span><strong>${number(target.up5_pct,1)}%</strong></div><div><span title="以最近已完成常规交易日为起点；未来10个交易日最低价不低于当日最低价，且第10日收盘高于当日收盘">10 日低点守稳</span><strong>${number(target.bottom10_pct,1)}%</strong></div></div>
     <div class="signal-progress" style="--signal-width:${Math.max(0,Math.min(100,Number(target.up5_pct)||0))}%"><span></span></div>
     <div class="signal-action"><i data-lucide="scan-eye"></i><span>${escapeHtml(action)}</span></div>
     <div class="signal-foot"><span>${escapeHtml(freshness)} · ${escapeHtml(minuteTime)}</span><span>${escapeHtml(skillLabel)}</span></div>

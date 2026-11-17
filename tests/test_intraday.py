@@ -134,6 +134,20 @@ class IntradayTests(unittest.TestCase):
         self.assertEqual((result['rsi_5'],result['rsi_15'],result['rsi_30']),(27.72,29.4,45.2))
         self.assertEqual(result['rsi_signal'],'短线超卖，可小额关注')
 
+    def test_rsi_pressure_weights_are_40_40_20_and_never_report_probability(self):
+        values={5:20,15:35,30:80,60:50}
+        def make_frame(bars,minutes):
+            return {'available':True,'minutes':minutes,'bars':100,'rsi1':values[minutes],
+                    'confirmed':False,'candidate':False,'top_confirmed':False,'top_candidate':False,
+                    'absorption':'承接偏弱','asof':'2026-11-17T15:00:00-05:00'}
+        with patch('intraday_signals.frame',side_effect=make_frame), \
+             patch('intraday_signals.confirmation_reference',return_value={'available':False,'probability_pct':None}):
+            result=intraday_signals.analyze({'ticker':'QQQ','bars':self.sessions(),'bars5':self.sessions()})
+        self.assertEqual(result['rsi_weights'],{'5':.4,'15':.4,'30':.2})
+        self.assertAlmostEqual(result['rsi_oversold_score'],.6)
+        self.assertAlmostEqual(result['rsi_overbought_score'],.2)
+        self.assertNotIn('rsi_probability',result)
+
     def test_existing_confirmed_shape_does_not_become_a_fake_100_percent_forecast(self):
         result=intraday_signals.confirmation_reference(self.double_bottom(),{'confirmed':True})
         self.assertEqual(result['status'],'confirmed');self.assertIsNone(result['probability_pct'])

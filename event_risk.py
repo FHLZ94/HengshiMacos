@@ -146,8 +146,8 @@ def trading_environment(model,event_risk,metrics=None,intraday=None,live_positio
             label='高位超买并滞涨，放缓追价';reason='5/15/30分钟 RSI 加权分达到超买区，最新价同时处历史高位且推进减弱'
         elif minute_fresh and overbought_confirmed:
             label='短线超买，避免追价';reason=f'5/15/30分钟 RSI 加权分 {overbought_score:.2f}（权重40%/40%/20%）；结合最新价历史分位 {history_rank:.1f}% 控制追价'
-        elif uses_live_position and minute_fresh and oversold_confirmed and history_rank<=5 and data.get('up3_pct',0)>=50 and risk['risk_score']<30:
-            label='短线超卖且历史极低，可小额分批';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}（权重40%/40%/20%），最新价处历史下侧 {history_rank:.1f}%；三日历史基准不低于50%，仍须遵守失效价'
+        elif uses_live_position and minute_fresh and oversold_confirmed and history_rank<=5 and risk['risk_score']<30:
+            label='短线超卖且历史极低，可小额分批';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}（权重40%/40%/20%），最新价处历史下侧 {history_rank:.1f}%；事件风险未达否决阈值，仍须遵守失效价'
         elif uses_live_position and minute_fresh and oversold_confirmed and history_rank<=15 and risk['risk_score']<30:
             label='短线超卖与历史偏低共振，小额关注';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}，最新价处历史下侧 {history_rank:.1f}%；分批观察，不代表底部确认'
         elif uses_live_position and minute_fresh and oversold_confirmed:

@@ -729,6 +729,8 @@ class DesktopAPI:
                     'asof':quote_time_label(quote.get('source_time') or quote.get('asof')),
                     'source':source_name(quote.get('source','')),'is_realtime':bool(quote.get('is_realtime')),
                     'stale':quote_stale,
+                    'regular_close':quote.get('regular_close'),
+                    'session_change_pct':quote.get('session_change_pct'),
                     'market_status':quote.get('market_status'),'session':quote.get('session'),
                     'fetched_at':local_time(quote.get('fetched_at'))}
                 live_positions[ticker]=market_model.live_price_position(
