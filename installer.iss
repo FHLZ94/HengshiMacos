@@ -1,8 +1,9 @@
 #define MyAppName "衡势"
-#define MyAppVersion "1.3.2"
+#define MyAppVersion "1.3.3"
 #define MyAppPublisher "范光旭"
-#define MyAppExeName "衡势-1.3.2.exe"
-#define PreviousAppExeName "衡势-1.3.1-UI2.exe"
+#define MyAppExeName "衡势-1.3.3.exe"
+#define PreviousAppExeName "衡势-1.3.2.exe"
+#define LegacyAppExeName "衡势-1.3.1-UI2.exe"
 
 [Setup]
 AppId={{9D6EB670-3356-4335-8CD4-B4274C4DE8B6}
@@ -13,7 +14,7 @@ AppPublisher={#MyAppPublisher}
 DefaultDirName={localappdata}\Programs\Hengshi-UI2
 DefaultGroupName={#MyAppName}
 OutputDir=installer
-OutputBaseFilename=衡势-1.3.2-Windows-安装包
+OutputBaseFilename=衡势-1.3.3-Windows-安装包
 SetupIconFile=nexus.ico
 WizardImageFile=assets\wizard.bmp
 WizardSmallImageFile=assets\wizard-small.bmp
@@ -34,13 +35,14 @@ DisableWelcomePage=no
 Name: "chinesesimplified"; MessagesFile: "assets\ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加任务："; Flags: checkedonce
 
 [Files]
 Source: "dist\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
 
 [InstallDelete]
 Type: files; Name: "{app}\{#PreviousAppExeName}"
+Type: files; Name: "{app}\{#LegacyAppExeName}"
 Type: files; Name: "{app}\衡势.exe"
 Type: files; Name: "{userprograms}\衡势 1.3.1-UI2\衡势 1.3.1-UI2.lnk"
 Type: files; Name: "{userprograms}\衡势 1.3.1-UI2\卸载衡势 1.3.1-UI2.lnk"
@@ -57,6 +59,7 @@ Filename: "{app}\{#MyAppExeName}"; Description: "启动衡势"; Flags: postinsta
 [UninstallRun]
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM ""{#MyAppExeName}"""; Flags: runhidden waituntilterminated; RunOnceId: "StopHengshi"
 Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM ""{#PreviousAppExeName}"""; Flags: runhidden waituntilterminated; RunOnceId: "StopHengshiPrevious"
+Filename: "{sys}\taskkill.exe"; Parameters: "/F /T /IM ""{#LegacyAppExeName}"""; Flags: runhidden waituntilterminated; RunOnceId: "StopHengshiLegacy"
 
 [UninstallDelete]
 Type: filesAndOrDirs; Name: "{app}"

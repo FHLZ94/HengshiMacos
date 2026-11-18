@@ -40,10 +40,15 @@ class DesktopStateTests(unittest.TestCase):
         api=DesktopAPI.__new__(DesktopAPI)
         with tempfile.TemporaryDirectory() as folder, patch('desktop.main.APP_DIR',Path(folder)):
             self.assertEqual(api.get_market_slots()['slots'],['QQQ','SPY','SMH','ORCL'])
-            saved=api.save_market_slots(['QQQ','SMH','ORCL','NVDA'])
+            self.assertEqual(api.get_market_slots()['limit'],8)
+            expected=['QQQ','SPY','SMH','ORCL','NVDA','AMD','AVGO','MU']
+            with patch.object(api,'_refresh_intraday_async') as refresh:
+                saved=api.save_market_slots(expected)
+            refresh.assert_called_once_with(force=True)
             self.assertTrue(saved['ok'])
-            self.assertEqual(api.get_market_slots()['slots'],['QQQ','SMH','ORCL','NVDA'])
+            self.assertEqual(api.get_market_slots()['slots'],expected)
             self.assertFalse(api.save_market_slots(['QQQ','QQQ'])['ok'])
+            self.assertFalse(api.save_market_slots(expected+['TSM'])['ok'])
 
     def test_ui2_custom_ticker_rsi_uses_cached_history(self):
         api=DesktopAPI.__new__(DesktopAPI)

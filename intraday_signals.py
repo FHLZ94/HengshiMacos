@@ -297,6 +297,8 @@ def confirmation_reference(bars,current):
 
 
 def fetch(config):
+    configured=config.get('_intraday_tickers')
+    tickers=list(dict.fromkeys(configured if configured is not None else ('QQQ','SPY','SMH','ORCL')))
     def one(ticker):
         for host in ('query1.finance.yahoo.com','query2.finance.yahoo.com'):
             try:
@@ -309,11 +311,11 @@ def fetch(config):
             except (requests.RequestException,ValueError,TypeError,KeyError):continue
         return ticker,None
     result={}
-    with ThreadPoolExecutor(max_workers=4) as pool:
-        for future in as_completed([pool.submit(one,t) for t in ('QQQ','SPY','SMH','ORCL')]):
+    with ThreadPoolExecutor(max_workers=min(8,max(1,len(tickers)))) as pool:
+        for future in as_completed([pool.submit(one,t) for t in tickers]):
             ticker,row=future.result()
             if row:result[ticker]=row
     checked=datetime.now(timezone.utc).isoformat(timespec='seconds')
     return result,{'source':'分钟线与背离结构','status':'ok' if result else 'error',
                    'count':len(result),'checked_at':checked,
-                   'missing':[ticker for ticker in ('QQQ','SPY','SMH','ORCL') if ticker not in result]}
+                   'missing':[ticker for ticker in tickers if ticker not in result]}

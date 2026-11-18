@@ -23,6 +23,7 @@ let chart = null;
 let rotationPeriod = 5;
 let toastTimer = null;
 let marketSlots = ['QQQ','SPY','SMH','ORCL'];
+let marketSlotLimit=8;
 const marketRsi = new Map();
 const marketRsiLoading = new Set();
 
@@ -63,7 +64,7 @@ function marketValuation(ticker) {
   const tenYear=Number(valuation?.years)>=9.5 && Number(valuation?.samples)>=100;
   return {pe:valuation?.pe, percentile:tenYear?valuation.percentile:null,
     label:tenYear?`近10年 ${valuation.samples} 个月样本${fund?.ticker!==ticker?' · QQQ指数代理':''}`:
-      (valuation?.history_status || '十年PE序列不足'), source:valuation?.source || ''};
+      (ticker==='SMH'?'':valuation?.history_status || '十年PE序列不足'), source:valuation?.source || ''};
 }
 function marketTime(value) {
   if (!value) return '时间未知';
@@ -82,6 +83,8 @@ function marketSignalCard(ticker, model, minute, risk, environment, slotIndex) {
   const lowerPosition=positionPct==null ? 50 : Math.max(0,Math.min(100,Number(positionPct)));
   const frames=intraday?.frames || {};
   const rsi=value=>frames[String(value)]?.available ? number(frames[String(value)].rsi1,2) : '—';
+  const rsiTone=value=>frames[String(value)]?.available && frames[String(value)].rsi1<=30?'cold':
+    frames[String(value)]?.available && frames[String(value)].rsi1>=70?'hot':'';
   const signalLabel=intraday?.stale?'分钟行情滞后':intraday?.available ? intraday.rsi_signal || '分钟结构待确认' : '分钟RSI待更新';
   const signalTone=!intraday?.stale && signalLabel.includes('超卖')?'oversold':
     !intraday?.stale && signalLabel.includes('超买')?'overbought':'';
@@ -103,7 +106,7 @@ function marketSignalCard(ticker, model, minute, risk, environment, slotIndex) {
     <div class="signal-live-quote"><span>${escapeHtml(sessionName || '最新价格')}</span><strong>${liveQuote.price==null?'—':'$'+number(liveQuote.price)}</strong><small>${liveQuote.stale?'报价时间待核 · ':''}${escapeHtml(liveQuote.label || '报价待同步')}${priceContext?' · '+escapeHtml(priceContext):''} · ${escapeHtml(liveQuote.asof || '时间未知')}</small></div>
     <div class="signal-valuation"><div><span>估值判断</span><strong>${valuation.pe!=null?number(valuation.pe,1)+'倍 PE':'PE待数据'}</strong></div><div><span>${ticker==='ORCL'?'统一参考价空间':'十年PE分位'}</span><strong>${ticker==='ORCL'?escapeHtml(valuation.label):valuation.percentile!=null?number(valuation.percentile,1)+'/100':'—'}</strong></div><small>${escapeHtml(ticker==='ORCL'?valuation.source:valuation.label)}</small></div>
     ${ticker==='QQQ'?'<div class="signal-earnings"><span>未来12个月加权盈利增速</span><strong>待计算</strong><small>成分权重与同口径预测覆盖不足</small></div>':'<div class="signal-earnings signal-earnings-placeholder" aria-hidden="true"></div>'}
-    <div class="signal-context signal-rsi-context"><span>RSI1 · 5/15分重点</span><span>5分 <b>${rsi(5)}</b></span><span>15分 <b>${rsi(15)}</b></span><span>30分 <b>${rsi(30)}</b></span></div>
+    <div class="signal-rsi-panel"><div class="signal-rsi-heading"><strong>RSI1</strong><span>5 / 15 分重点</span></div><div class="signal-rsi-values"><span class="rsi-tag ${rsiTone(5)}"><small>5 分钟</small><b>${rsi(5)}</b></span><span class="rsi-tag ${rsiTone(15)}"><small>15 分钟</small><b>${rsi(15)}</b></span><span class="rsi-tag ${rsiTone(30)}"><small>30 分钟</small><b>${rsi(30)}</b></span></div></div>
     <div class="signal-context"><span>${hasFreshLivePosition?'最新价历史分位':'最近日线历史分位'}</span><span title="使用同一最新报价对照已完成日线中的20日均线偏离、经同期波动率标准化后的分布；不是估值PE分位。">历史下侧 <b>${lower}</b></span><span>${hasFreshLivePosition?'有效样本':'日线RSI14'} <b>${hasFreshLivePosition?number(livePosition.samples,0):number(setup?.rsi14,1)}</b></span></div>
     <div class="signal-position"><span class="signal-position-track" style="--position:${lowerPosition}%"><i></i></span><span>历史低位</span><span>常态</span><span>历史高位</span></div>
     <div class="signal-prob"><div><span title="以已完成常规交易日收盘为预测起点，按历史未来5个交易日收盘涨跌统计；不是当前盘中入场胜率。">未来 5 日上涨（日线参考）</span><strong>${number(target.up5_pct,1)}%</strong></div><div><span title="以最近已完成常规交易日为起点；未来10个交易日最低价不低于当日最低价，且第10日收盘高于当日收盘">10 日低点守稳</span><strong>${number(target.bottom10_pct,1)}%</strong></div></div>
@@ -119,28 +122,36 @@ function marketActionCard(ticker, slotIndex, asof) {
   const metric=item?.metric || watched?.metric || {};
   const valuation=marketValuation(ticker);
   const cached=marketRsi.get(`${ticker}|${asof}`);
-  const rsi=cached?.result?.ok ? number(cached.result.rsi14,1) : '—';
-  const status=metric.trend || '趋势待数据';
+  const intraday=state.market.intraday?.[ticker] || {};
+  const frames=intraday.frames || {};
+  const rsi=value=>frames[String(value)]?.available ? number(frames[String(value)].rsi1,2) : '—';
+  const rsiTone=value=>frames[String(value)]?.available && frames[String(value)].rsi1<=30?'cold':
+    frames[String(value)]?.available && frames[String(value)].rsi1>=70?'hot':'';
+  const status=intraday.stale?'分钟线滞后':intraday.available?intraday.rsi_signal || '短线信号待确认':'分钟行情待更新';
+  const statusTone=status.includes('超卖')?'oversold':status.includes('超买')?'overbought':'';
   const action=item?.advice?.action || '交易条件待同步';
   const zone=item?.advice?.watch_zone;
   return `<article class="market-signal market-custom">
-    <div class="signal-top"><div><span class="signal-ticker">${escapeHtml(ticker)}</span><span class="signal-name">${escapeHtml(item?.name || watched?.name || '同步中')}</span></div><div class="signal-meta"><span class="signal-status">短线 · ${escapeHtml(status)}</span><span class="signal-date">日线 ${escapeHtml(metric.date || asof || '待同步')}</span></div></div>
+    <div class="signal-top"><div><span class="signal-ticker">${escapeHtml(ticker)}</span><span class="signal-name">${escapeHtml(item?.name || watched?.name || '同步中')}</span></div><div class="signal-meta"><span class="signal-status ${statusTone}">短线 · ${escapeHtml(status)}</span><span class="signal-date">日线 ${escapeHtml(metric.date || asof || '待同步')}</span></div></div>
     <div class="market-card-tools"><button type="button" class="market-replace" data-replace-market-slot="${slotIndex}" title="更换研判标的" aria-label="更换 ${escapeHtml(ticker)}"><i data-lucide="pencil"></i></button><button type="button" class="market-remove" data-remove-market-slot="${slotIndex}" title="从市场研判移除" aria-label="从市场研判移除 ${escapeHtml(ticker)}"><i data-lucide="x"></i></button></div>
     <div class="signal-valuation"><div><span>当前估值</span><strong>${valuation.pe!=null?number(valuation.pe,1)+'倍 PE':'PE待数据'}</strong></div><div><span>${item?.is_fund?'十年PE分位':'12个月参考空间'}</span><strong>${item?.is_fund?(valuation.percentile!=null?number(valuation.percentile,1)+'/100':'—'):signed(item?.upside_pct ?? watched?.upside_pct)}</strong></div><small>${escapeHtml(valuation.label)}</small></div>
     <div class="signal-earnings signal-earnings-placeholder" aria-hidden="true"></div>
-    <div class="signal-context"><span>短线指标</span><span>RSI14 <b>${rsi}</b></span><span>近5日 <b class="${tone(metric.return5)}">${signed(metric.return5)}</b></span></div>
+    <div class="signal-rsi-panel"><div class="signal-rsi-heading"><strong>RSI1</strong><span>5 / 15 分重点</span></div><div class="signal-rsi-values"><span class="rsi-tag ${rsiTone(5)}"><small>5 分钟</small><b>${rsi(5)}</b></span><span class="rsi-tag ${rsiTone(15)}"><small>15 分钟</small><b>${rsi(15)}</b></span><span class="rsi-tag ${rsiTone(30)}"><small>30 分钟</small><b>${rsi(30)}</b></span></div></div>
+    <div class="signal-context"><span>短线趋势</span><span>近5日 <b class="${tone(metric.return5)}">${signed(metric.return5)}</b></span><span>${intraday.stale?'分钟线':'RSI信号'} <b>${escapeHtml(status)}</b></span></div>
     <div class="custom-quote"><span>最近报价</span><strong>${item?.current_price==null?'—':'$'+number(item.current_price)}</strong><span>${escapeHtml(item?.price_label || '行情待同步')}</span></div>
     <div class="custom-conditions"><span>关注区 ${zone?'$'+number(zone[0])+'–'+number(zone[1]):'待计算'}</span><span>失效 ${item?.advice?.risk_price?'$'+number(item.advice.risk_price):'待计算'}</span></div>
     <div class="signal-action"><i data-lucide="scan-eye"></i><span>${escapeHtml(action)}</span></div>
-    <div class="signal-foot"><span>${cached?.result?.ok?'RSI日线 '+escapeHtml(cached.result.asof):'RSI历史数据待同步'}</span><span>无专属10日概率模型</span></div>
+    <div class="signal-foot"><span>${frames['15']?.asof?marketTime(frames['15'].asof):cached?.result?.ok?'日线 '+escapeHtml(cached.result.asof):'行情时间待同步'}</span><span>概率模型未校准</span></div>
   </article>`;
 }
 function renderPulse(){
+  $('#addMarketTracking').disabled=marketSlots.length>=marketSlotLimit;
+  $('#addMarketTracking').title=marketSlots.length>=marketSlotLimit?`市场研判最多 ${marketSlotLimit} 个标的`:'';
   const model=state.market.model,risks=state.market.event_risk || {},environment=state.market.environment || {};
   if(!model?.available || !model.targets){
     $('#pulseHeadline').textContent='正在计算短线交易环境';$('#pulseDate').textContent=model?.reason || '优先读取本地历史';
     $('#marketDecisionStrip').innerHTML='<span>等待完整交易日数据</span>';
-    $('#pulseGrid').innerHTML=marketSlots.map((ticker,index)=>marketActionCard(ticker,index,state.market?.model?.date || '')).join('') || '<div class="empty-list">点击“添加跟踪”设置研判标的</div>';
+    $('#pulseGrid').innerHTML=marketSlots.map((ticker,index)=>marketActionCard(ticker,index,state.market?.model?.date || '')).join('') || '<div class="empty-list">暂无研判标的，请添加一个标的</div>';
     $('#pulseFoot').textContent='';$('#modelMethod').textContent='等待有效历史数据';return;
   }
   const codes=['QQQ','SPY','SMH','ORCL'],assessment=state.market.assessment || {},cnn=assessment.cnn;
@@ -156,7 +167,7 @@ function renderPulse(){
   $('#marketDecisionStrip').innerHTML=`<div><span class="brief-kicker">今日研究状态</span><strong>${worst?'先核对重大风险':stale?'等待报价与分钟线同步':actionable.length?'有 '+actionable.length+' 个标的满足分批观察条件':'观察优先，等待确认'}</strong></div><div class="brief-items"><span><i data-lucide="crosshair"></i>${actionable.length} 个满足分批条件</span><span><i data-lucide="shield-alert"></i>${worst?'存在重大事件否决':'事件风险逐条核验'}</span><span><i data-lucide="database"></i>日线 ${escapeHtml(model.date)}</span></div>`;
   $('#pulseGrid').innerHTML=marketSlots.map((ticker,index)=>model.targets[ticker]
     ? marketSignalCard(ticker,model,minute,risks,environment,index)
-    : marketActionCard(ticker,index,model.date)).join('') || '<div class="empty-list">点击“添加跟踪”设置研判标的</div>';
+    : marketActionCard(ticker,index,model.date)).join('') || '<div class="empty-list">暂无研判标的，请添加一个标的</div>';
   $('#pulseFoot').textContent='';
   const report=(ticker,name,item)=>`<div class="model-report"><strong>${ticker} · ${name}</strong><p>${escapeHtml(item.method)} · 不重叠基准样本 ${item.training_samples} 组 · 按时间检验 ${item.validation_count} 次 · 概率误差 ${number(item.brier,4)} / 基线 ${number(item.baseline_brier,4)}（越小越好）</p><p>${escapeHtml(item.interval_scope)}：${item.interval?.join('–') || '样本不足'}%（历史发生率95%区间，不是未来真实概率保证）。</p></div>`;
   $('#modelMethod').innerHTML=codes.map(t=>report(t,'未来3日上涨',model.targets[t].up3)+report(t,'未来5日上涨',model.targets[t].up5)+report(t,'10日低点守稳',model.targets[t].bottom10)+`<details class="coefficient-report"><summary>${t} 五日模型的指标与权重</summary><p>${model.targets[t].up5.weights_active?'当前输出采用65%校准模型与35%历史基准。':'候选模型暂未提供稳定额外优势，当前输出采用100%历史基准；下列候选系数暂不用于最终概率。'}</p><table><thead><tr><th>指标</th><th>标准化系数</th><th>绝对系数占比</th></tr></thead><tbody>${model.targets[t].up5.feature_weights.map(w=>`<tr><td>${escapeHtml(w.name)}</td><td>${number(w.coefficient,4)}</td><td>${number(w.share_pct,1)}%</td></tr>`).join('')}</tbody></table><p>系数由过去训练数据拟合；占比帮助理解模型，不是因果权重，也不是概率增加的百分点。</p></details>`).join('')+`<p>${escapeHtml(model.up5_definition)}。${escapeHtml(model.bottom10_definition)}。</p><p>历史 ${model.history_start}—${model.date}，${model.history_days} 个共同交易日。${escapeHtml(model.limitations)}</p><p>${escapeHtml(risks.definition || '')}。${escapeHtml(risks.news_model_status || '')}。公开言论、议员提案与已生效政策分别处理。</p>`;
@@ -171,7 +182,6 @@ function renderEvents() {
     return Number.isFinite(timestamp) && timestamp >= cutoff && timestamp <= Date.now();
   });
   const high = recent.filter((item) => item.grade === 'S1' || item.grade === 'S2');
-  const held = new Set(state.watch.filter((item) => item.is_held).map((item) => item.ticker));
   const followed = new Set(state.actions.map((item) => item.ticker));
   const rank = {'S1':4,'S2':3,'S3':2,'S4':1};
   const focusPool = recent.filter(item =>
@@ -182,7 +192,7 @@ function renderEvents() {
   const stanceCard=(name,icon)=>{const item=stance[name];if(!item)return `<div class="stance-card"><span class="stance-title">${icon} ${escapeHtml(name)}</span><strong>等待相关情报</strong><small>最近24小时暂无足够的产业链事件</small></div>`;const tone=item.net_score>15?'positive':item.net_score<-15?'negative':'neutral';const top=item.top_event;return `<div class="stance-card ${tone}"><span class="stance-title">${icon} ${escapeHtml(name)}</span><strong>${escapeHtml(item.label)}</strong><span class="stance-score">影响分 ${item.net_score>0?'+':''}${number(item.net_score,1)} / 100</span><small>${item.event_count} 条相关事件 · ${item.verified_count} 条有核验证据${top?` · 最高影响：${escapeHtml(top.stage)}`:''}</small></div>`;};
   $('#eventStanceDashboard').innerHTML=`<div class="stance-heading"><strong>过去24小时产业链信息影响</strong><span>官方公告 · 独立报道 · 产业传导 · 时效</span></div><div class="stance-grid">${stanceCard('半导体产业链','◈')}${stanceCard('大科技与AI','◌')}</div><p class="stance-method">信息影响分用于事件排序，不代表收益概率；结论结合来源等级、正文证据和市场反应。</p>`;
   const lead = [...focusPool].sort((a,b) =>
-    (Number(b.tickers.some(ticker => held.has(ticker))) - Number(a.tickers.some(ticker => held.has(ticker)))) ||
+    (Number(b.tickers.some(ticker => followed.has(ticker))) - Number(a.tickers.some(ticker => followed.has(ticker)))) ||
     ((b.analysis?.score ?? rank[b.grade]*12)-(a.analysis?.score ?? rank[a.grade]*12)) ||
     (Date.parse(b.published_raw) - Date.parse(a.published_raw)))[0];
   focusEventId = lead?.id ?? null;
@@ -199,7 +209,7 @@ function renderEvents() {
   const direction = $('#directionFilter').value;
   const topic = $('#topicFilter').value;
   const dateRange = $('#dateFilter').value;
-  const holdings = held;
+  const tracked = followed;
   const filtered = state.news.filter((item) => {
     const timestamp = Date.parse(item.published_raw);
     const withinDate = dateRange === 'all' ||
@@ -209,7 +219,7 @@ function renderEvents() {
       (item.live_match && state.search_query?.toLowerCase() === query);
     return withinDate && (grade === 'all' || (grade === 'material' ? (query || rank[item.analysis?.grade || item.grade]>=2) : grade === (item.analysis?.grade || item.grade))) &&
       (direction === 'all' || direction === (item.analysis?.direction || item.direction)) &&
-      (topic === 'all' || (topic === 'holdings' ? item.tickers.some((ticker) => holdings.has(ticker)) : item.topics.includes(topic))) &&
+      (topic === 'all' || (topic === 'holdings' ? item.tickers.some((ticker) => tracked.has(ticker)) : item.topics.includes(topic))) &&
       matchesText;
   });
   const holder = $('#eventList');
@@ -310,7 +320,7 @@ function renderMarket() {
 }
 
 function annualCaption(item){
-  if(item.is_fund){const fv=item.fund_valuation;return `当前PE ${fv?.pe ? number(fv.pe,1)+'倍' : '待数据'} · 历史估值分位 ${fv?.percentile!=null ? number(fv.percentile,1)+' / 100' : (fv?.history_status || '待历史数据')}`;}
+  if(item.is_fund){const fv=item.fund_valuation;return `当前PE ${fv?.pe ? number(fv.pe,1)+'倍' : '待数据'} · 历史估值分位 ${fv?.percentile!=null ? number(fv.percentile,1)+' / 100' : item.ticker==='SMH'?'—':(fv?.history_status || '待历史数据')}`;}
   const annual=item.annual;return annual?.reference_price ? `未来12个月合理价值：$${number(annual.reference_price)} · ${signed(annual.upside_pct)}` : '未来12个月合理价值待有效数据';
 }
 function renderPriceMap(item) {
@@ -338,7 +348,7 @@ function renderDecisions() {
       <span class="decision-prices">${item.advice.in_watch_zone?'已进入关注区':'关注区间'} ${item.advice.watch_zone ? '$'+number(item.advice.watch_zone[0])+'–'+number(item.advice.watch_zone[1]) : '正在获取日线并计算'}</span>
       <span class="decision-risk-price">失效价 <strong>${item.advice.risk_price?'$'+number(item.advice.risk_price):'待计算'}</strong></span>
       <span class="decision-quote-time">${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_asof || '等待行情')}${item.sync_status==='正在更新'?' · 数据更新中':''}</span>
-    </button><button type="button" class="tracking-remove" data-remove-tracking="${escapeHtml(item.ticker)}" title="移出跟踪，保留实际持仓" aria-label="移出跟踪${escapeHtml(item.ticker)}"><i data-lucide="x"></i></button></article>`).join('') || '<div class="empty-list">尚未设置跟踪标的，点击右上角「添加标的」开始。</div>';
+    </button><button type="button" class="tracking-remove" data-remove-tracking="${escapeHtml(item.ticker)}" title="移出关注列表，持有标记不变" aria-label="移出关注标的${escapeHtml(item.ticker)}"><i data-lucide="x"></i></button></article>`).join('') || '<div class="empty-list">尚未设置跟踪标的，点击右上角「添加标的」开始。</div>';
   if (!state.actions.some(item=>item.ticker===selectedAction))selectedAction=state.actions[0]?.ticker || null;
   renderDecisionDetail();
 }
@@ -350,20 +360,13 @@ function renderDecisionDetail() {
   const v=item.valuation || {},ref=v.reference || {};
   $('#decisionDetail').innerHTML=`<h3>${escapeHtml(item.ticker)} <span class="decision-current">${item.current_price==null?'—':'$'+number(item.current_price)}</span> · ${escapeHtml(a.action)}</h3>
     <p class="decision-quote-time">${escapeHtml(item.price_label)} · ${escapeHtml(item.quote_asof)}${item.regular_close?' · 最近收盘 $'+number(item.regular_close):''}</p>
-    <div class="decision-price-row"><div><span>短线关注区间</span><strong>${a.watch_zone?'$'+number(a.watch_zone[0])+'–$'+number(a.watch_zone[1]):'待计算'}</strong></div><div><span>${item.is_fund?'当前PE / 历史估值分位':'未来12个月合理价值 / 空间'}</span><strong>${item.is_fund ? (item.fund_valuation?.pe ? number(item.fund_valuation.pe,1)+'倍' : 'PE待数据')+' / '+(item.fund_valuation?.percentile!=null ? number(item.fund_valuation.percentile,1)+' / 100' : (item.fund_valuation?.history_status || '历史待数据')) : item.reference_price?'$'+number(item.reference_price)+' / '+signed(item.upside_pct):'待有效数据'}</strong></div><div><span>风险失效价</span><strong>${a.risk_price?'$'+number(a.risk_price):'—'}</strong></div></div>
+    <div class="decision-price-row"><div><span>短线关注区间</span><strong>${a.watch_zone?'$'+number(a.watch_zone[0])+'–$'+number(a.watch_zone[1]):'待计算'}</strong></div><div><span>${item.is_fund?'当前PE / 历史估值分位':'未来12个月合理价值 / 空间'}</span><strong>${item.is_fund ? (item.fund_valuation?.pe ? number(item.fund_valuation.pe,1)+'倍' : 'PE待数据')+' / '+(item.fund_valuation?.percentile!=null ? number(item.fund_valuation.percentile,1)+' / 100' : item.ticker==='SMH'?'—':(item.fund_valuation?.history_status || '历史待数据')) : item.reference_price?'$'+number(item.reference_price)+' / '+signed(item.upside_pct):'待有效数据'}</strong></div><div><span>风险失效价</span><strong>${a.risk_price?'$'+number(a.risk_price):'—'}</strong></div></div>
     ${renderPriceMap(item)}
     <div class="decision-detail-grid"><div><span>参考价依据</span><p>${item.is_fund ? escapeHtml(item.fund_valuation ? item.fund_valuation.basis+' · '+item.fund_valuation.source+' · '+item.fund_valuation.asof : '正在获取基金组合PE及同口径历史；历史不足不生成分位') : escapeHtml(v.reference_label || '')+'。'+escapeHtml(v.reason || '')}</p></div><div><span>短线确认条件</span><p>${escapeHtml(a.confirm)}</p></div><div><span>失效与风险</span><p>${escapeHtml(a.invalidate)}</p></div></div><p class="method-note">${item.is_fund?'基金按当前PE与历史估值分位评估相对贵贱；分位越低，历史相对估值越低。':'参考空间＝未来12个月合理价值÷当前价－1，与下方估值表一致。'}关注区间属于短线价格条件。</p>`;
 
 }
 
-function renderPortfolio() {
-  const priced = state.portfolio.filter((item) => item.value != null);
-  const value = priced.reduce((sum, item) => sum + item.value, 0);
-  const profit = priced.reduce((sum, item) => sum + item.profit, 0);
-  $('#portfolioSummary').innerHTML = `<div class="portfolio-stat"><label>跟踪标的</label><strong>${state.actions.length}</strong></div>
-    <div class="portfolio-stat"><label>已录入数量与成本</label><strong>${state.portfolio.length}</strong></div>
-    <div class="portfolio-stat"><label>可计价市值</label><strong>$${number(value)}</strong></div>
-    <div class="portfolio-stat"><label>未实现盈亏</label><strong class="${tone(profit)}">${profit > 0 ? '+' : ''}$${number(profit)}</strong></div>`;
+function renderValuations() {
   const funds=state.watch.filter(item=>item.is_fund && !item.ticker.startsWith('^'));
   const stocks=state.watch.filter(item=>!item.is_fund)
     .sort((a,b) => (b.upside_pct ?? -Infinity)-(a.upside_pct ?? -Infinity));
@@ -372,12 +375,8 @@ function renderPortfolio() {
     <td>${item.price == null ? '无报价' : '$' + number(item.price)}<small class="price-label">${escapeHtml(item.price_label)}${item.session_change_pct!=null?' · '+signed(item.session_change_pct):''}</small></td><td class="${tone(item.change)}">${signed(item.change)}</td>
     <td class="${tone(item.metric?.return5)}">${signed(item.metric?.return5)}</td><td>${escapeHtml(item.metric?.trend || '数据不足')}</td>
     <td title="${escapeHtml(item.fund_valuation?.basis)} · ${escapeHtml(item.fund_valuation?.source)}">${item.fund_valuation?.pe ? number(item.fund_valuation.pe,2)+' 倍' : '待取得估值'}<small class="price-label">${escapeHtml(item.fund_valuation?.proxy_ticker ? 'QQQ 指数代理' : item.fund_valuation?.asof || '')}</small></td>
-    <td>${item.fund_valuation?.percentile!=null ? number(item.fund_valuation.percentile,1)+' / 100<small class="price-label">近'+number(item.fund_valuation.years,0)+'年 · '+item.fund_valuation.samples+'个月度样本</small>' : '<span class="muted">历史PE不足</span>'}</td><td class="muted">${escapeHtml(item.asof || '来源不可用')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">观察列表中暂无宽基或行业基金</td></tr>';
+      <td>${item.fund_valuation?.percentile!=null ? number(item.fund_valuation.percentile,1)+' / 100<small class="price-label">近'+number(item.fund_valuation.years,0)+'年 · '+item.fund_valuation.samples+'个月度样本</small>' : item.ticker==='SMH'?'—':'<span class="muted">历史PE不足</span>'}</td><td class="muted">${escapeHtml(item.asof || '来源不可用')}</td></tr>`).join('') || '<tr><td colspan="8" class="muted">观察列表中暂无宽基或行业基金</td></tr>';
   $('#watchTable tbody').innerHTML=stocks.map(item=>`<tr data-watch="${escapeHtml(item.ticker)}" class="${selectedWatch===item.ticker?'selected':''}"><td title="${escapeHtml(item.name)}">${escapeHtml(item.ticker)} ${item.is_held?'<em class="held-tag">已持有</em>':''}<span class="muted"> ${escapeHtml(item.name)}</span></td><td>$${number(item.price)}<small class="price-label">${escapeHtml(item.price_label)}</small></td><td class="${tone(item.change)}">${signed(item.change)}</td><td title="${escapeHtml(item.valuation.current_pe_source)}">${item.current_pe==null?escapeHtml(item.pe_status):number(item.current_pe,1)+' 倍'}</td><td>${item.fair_price?'$'+number(item.fair_price):'待有效数据'}</td><td class="${tone(item.upside_pct)}">${signed(item.upside_pct)}</td><td class="reference-method">${escapeHtml(item.valuation.reference_label)}</td><td>${escapeHtml(item.asof)}</td></tr>`).join('') || '<tr><td colspan="8">暂无个股跟踪</td></tr>';
-  $('#positionTable tbody').innerHTML = state.portfolio.map((item) => `<tr><td>${escapeHtml(item.ticker)}</td><td>${number(item.quantity,0)}</td><td>$${number(item.cost,3)}</td>
-    <td>${item.price == null ? '无报价' : '$' + number(item.price)}</td><td>${item.value == null ? '—' : '$' + number(item.value)}</td>
-    <td class="${tone(item.profit)}">${item.profit == null ? '—' : `${item.profit > 0 ? '+' : ''}$${number(item.profit)}`}</td>
-    <td><button class="small-command" data-delete="${escapeHtml(item.ticker)}">删除</button></td></tr>`).join('') || '<tr><td colspan="7" class="muted">尚未录入实际持仓</td></tr>';
   if (selectedWatch == null && state.watch.length) selectedWatch = stocks[0]?.ticker || state.watch[0].ticker;
   renderValuationDetail();
 }
@@ -388,7 +387,7 @@ function renderValuationDetail() {
   if (!item) { $('#valuationDetail').innerHTML = '<div class="empty-detail">选择标的查看估值依据</div>'; return; }
   const news = state.news.filter((article) => article.tickers.includes(item.ticker)).slice(0,2);
   const isFund=!!item.is_fund,v=item.valuation || {},ref=v.reference || {},fv=item.fund_valuation;
-  const fundCopy=fv?`当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · ${fv.asof}。${fv.percentile!=null?'近'+number(fv.years,0)+'年估值分位 '+number(fv.percentile,1)+'%。':(fv.history_status || '历史序列暂缺。')}`:'尚未取得可复核的基金PE';
+  const fundCopy=fv?`当前PE ${number(fv.pe,2)} 倍 · ${fv.basis} · ${fv.source} · ${fv.asof}${fv.percentile!=null?'。近'+number(fv.years,0)+'年估值分位 '+number(fv.percentile,1)+'%。':item.ticker==='SMH'?'':(fv.history_status?` · ${fv.history_status}`:'')}`:'尚未取得可复核的基金PE';
   const valueCopy=item.fair_price?`未来12个月合理价值 $${number(item.fair_price)}，相对当前价 ${signed(item.upside_pct)}。${v.reference_method==='management_history_median' ? '管理层未来12个月EPS '+number(v.eps_used)+' × 历史PE中位数 '+number(v.pe_used,2)+' 倍。' : '采用来源发布的分析师目标价中位数。'}`:'未来12个月合理价值暂缺。';
   $('#valuationDetail').innerHTML=`<div class="valuation-layout"><div class="valuation-copy"><strong>${escapeHtml(item.ticker)} · ${escapeHtml(item.name)}</strong><div>${escapeHtml(isFund?fundCopy:valueCopy)}</div>${!isFund?`<div>${escapeHtml(v.reason || '')}</div><div>价格依据：${escapeHtml(ref.source || v.reference_label)}${ref.fetched_at?' · 获取 '+new Date(ref.fetched_at).toLocaleString('zh-CN',{hour12:false}):''}</div>${ref.source_url?`<button type="button" class="small-command" data-open-management="${escapeHtml(ref.source_url)}">核对参考价来源</button>`:''}${ref.guidance_url?`<button type="button" class="small-command" data-open-management="${escapeHtml(ref.guidance_url)}">核对管理层指引</button>`:''}<p class="method-note">当前PE采用历史12个月会计盈利；亏损时不生成正PE。参考价在交易卡片、估值表与事件详情共用，不混用旧版情景价与平均目标价。</p>`:''}${news.length?`<div>${escapeHtml(news.map(n=>n.title).join('；'))}</div>`:''}</div><div class="valuation-controls"><button type="button" class="quiet-button" id="toggleHolding">${item.is_held?'取消持有标记':'标记为已持有'}</button>${!isFund?'<button type="button" class="quiet-button" id="addGuidance">管理层指引</button>':''}</div></div>`;
   icons();
@@ -407,7 +406,7 @@ function syncActiveTab(){
   document.querySelectorAll('main > section').forEach(section=>{if(section.getBoundingClientRect().top<=anchor)current=section.id;});
   document.querySelectorAll('.section-nav a').forEach(link=>link.classList.toggle('active',link.getAttribute('href')==='#'+current));
 }
-function render() {setStatus();renderPulse();renderEvents();renderMarket();renderDecisions();renderPortfolio();renderSettings();icons();syncActiveTab();}
+function render() {setStatus();renderPulse();renderEvents();renderMarket();renderDecisions();renderValuations();renderSettings();icons();syncActiveTab();}
 
 async function call(method,...args) {
   try { return await window.pywebview.api[method](...args); }
@@ -415,12 +414,12 @@ async function call(method,...args) {
 }
 async function loadMarketSlots() {
   const result=await call('get_market_slots');
-  if (result?.ok && Array.isArray(result.slots)) marketSlots=result.slots;
+  if (result?.ok && Array.isArray(result.slots)) {marketSlots=result.slots;marketSlotLimit=Number(result.limit) || marketSlotLimit;}
 }
 async function saveMarketSlots(slots) {
   const result=await call('save_market_slots',slots);
   if (!result?.ok) {toast(result?.message || '研判位保存失败');return false;}
-  marketSlots=result.slots;
+  marketSlots=result.slots;marketSlotLimit=Number(result.limit) || marketSlotLimit;
   renderPulse();icons();
   void refreshMarketRsi();
   return true;
@@ -440,11 +439,16 @@ async function refreshMarketRsi() {
   }
 }
 function openMarketSlotDialog(index) {
+  const replacing=index!=null;
+  if (!replacing && marketSlots.length>=marketSlotLimit) {toast(`市场研判最多 ${marketSlotLimit} 个标的`);return;}
   const select=$('#marketSlotIndex');
-  select.innerHTML=marketSlots.map((ticker,slot)=>`<option value="${slot}">第 ${slot+1} 位 · ${escapeHtml(ticker)}</option>`).join('')+
-    (marketSlots.length<4?`<option value="new">新增第 ${marketSlots.length+1} 位</option>`:'');
-  select.value=index==null?(marketSlots.length<4?'new':String(marketSlots.length-1)):String(index);
-  $('#marketSlotTicker').value=index==null?'':marketSlots[index];
+  select.innerHTML=marketSlots.map((ticker,slot)=>`<option value="${slot}">第 ${slot+1} 位 · ${escapeHtml(ticker)}</option>`).join('');
+  select.value=replacing?String(index):'';
+  $('#marketSlotPosition').hidden=!replacing;
+  $('#marketSlotTitle').textContent=replacing?'替换研判标的':'添加研判标的';
+  $('#saveMarketSlot').textContent=replacing?'替换并同步':'添加并同步';
+  $('#marketSlotDialog').dataset.mode=replacing?'replace':'add';
+  $('#marketSlotTicker').value=replacing?marketSlots[index]:'';
   $('#marketTickerSuggestions').innerHTML=(state?.actions || []).map(item=>`<option value="${escapeHtml(item.ticker)}">${escapeHtml(item.name || '')}</option>`).join('');
   $('#marketSlotFeedback').textContent='';
   $('#marketSlotDialog').showModal();
@@ -470,10 +474,11 @@ function bind() {
   $('#marketSlotForm').addEventListener('submit',async event=>{
     event.preventDefault();
     const ticker=$('#marketSlotTicker').value.trim().toUpperCase();
-    const index=$('#marketSlotIndex').value;
+    const replacing=$('#marketSlotDialog').dataset.mode==='replace';
+    const index=replacing?Number($('#marketSlotIndex').value):'new';
     const feedback=$('#marketSlotFeedback');
     if (!/^[A-Z0-9.^-]{1,15}$/.test(ticker)) {feedback.textContent='请输入有效的证券代码';return;}
-    if (marketSlots.includes(ticker) && marketSlots.indexOf(ticker)!==Number(index)) {feedback.textContent='该标的已在市场研判中';return;}
+    if (marketSlots.includes(ticker) && marketSlots.indexOf(ticker)!==index) {feedback.textContent='该标的已在市场研判中';return;}
     const button=$('#saveMarketSlot');button.disabled=true;
     try {
       if (!state.market.model?.targets?.[ticker] && !state.actions.some(item=>item.ticker===ticker)) {
@@ -539,11 +544,8 @@ function bind() {
   $('#valuationDetail').addEventListener('click', async (event) => {const button=event.target.closest('[data-open-management]');if(button)await call('open_url',button.dataset.openManagement);});
   $('#guidanceForm').addEventListener('submit', async (event) => {event.preventDefault();const result=await call('save_guidance',$('#guidanceTicker').value,$('#guidanceEps').value,$('#guidanceUrl').value,$('#guidanceBasis').value);toast(result.message || '已处理');if(result.ok)$('#guidanceDialog').close();await poll();});
   $('#editWatchlist').addEventListener('click', () => {$('#watchInput').value=state.settings.watchlist.join(', ');$('#watchDialog').showModal();});
-  $('#addPosition').addEventListener('click', () => {$('#positionForm').reset();$('#positionDialog').showModal();});
   document.querySelectorAll('[data-close]').forEach((button) => button.addEventListener('click', () => $('#'+button.dataset.close).close()));
   $('#watchForm').addEventListener('submit', async (event) => {event.preventDefault();const result=await call('save_watchlist',$('#watchInput').value);toast(result.message || '已处理');if (result.ok)$('#watchDialog').close();await poll();});
-  $('#positionForm').addEventListener('submit', async (event) => {event.preventDefault();const result=await call('save_position',$('#positionTicker').value,$('#positionQuantity').value,$('#positionCost').value);toast(result.message || '已处理');if (result.ok)$('#positionDialog').close();await poll();});
-  $('#positionTable').addEventListener('click', async (event) => {const button=event.target.closest('[data-delete]');if (button && confirm(`删除 ${button.dataset.delete} 的本地持仓记录？`)) {const result=await call('delete_position',button.dataset.delete);toast(result.message || '已处理');await poll();}});
   $('#saveNetwork').addEventListener('click', async () => {const result=await call('save_network',$('#proxyInput').value,$('#autoProxy').checked);toast(result.message || '已处理');await poll();});
   $('#saveModel').addEventListener('click', async () => {const result=await call('set_local_model',$('#modelInput').value);toast(result.message || '已处理');await poll();});
   $('#settingsButton').addEventListener('click',() => $('#settingsDialog').showModal());

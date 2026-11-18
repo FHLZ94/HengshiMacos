@@ -1,5 +1,7 @@
 import unittest
 from datetime import datetime,timezone
+import tempfile
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import Mock, patch
 
@@ -26,8 +28,10 @@ class DataServiceTests(unittest.TestCase):
 
     def test_global_intelligence_filters_irrelevant_geopolitical_and_crime_stories(self):
         self.assertFalse(data_service.intelligence_relevant('Poland investigates a terror incident', 'national police inquiry', []))
+        self.assertFalse(data_service.intelligence_relevant('Australia begins clearing Israeli settlers from disputed territory', 'Parliament approved a settlement policy.', []))
         self.assertFalse(data_service.intelligence_relevant('Celebrity event draws attention', 'entertainment story', []))
         self.assertTrue(data_service.intelligence_relevant('Commerce Department tightens semiconductor export controls', 'AI chip supply chain policy', []))
+        self.assertTrue(data_service.intelligence_relevant('Federal Reserve signals rates will stay higher; Nasdaq growth stocks sell off', '', []))
         self.assertTrue(data_service.intelligence_relevant('Oracle expands AI datacenter capacity', 'capital expenditure guidance', ['ORCL']))
         self.assertTrue(data_service.intelligence_relevant('NVIDIA and Lambda deploy CPO links for AI datacenters', '', []))
         self.assertIn('先进封装与光互连',data_service.intelligence_topics([],'NVIDIA CPO and silicon photonics deployment'))
@@ -76,8 +80,37 @@ class DataServiceTests(unittest.TestCase):
         self.assertEqual(request.call_args_list[1].kwargs['headers']['If-None-Match'],'"v1"')
         parse.assert_called_once()
 
+    def test_feed_cache_persists_etag_and_items_across_process_cache_reset(self):
+        url='https://unit-test.example/rss-persistent'
+        entry={'title':'Oracle increases AI datacenter capacity','link':'https://oracle.com/ai',
+               'summary':'Oracle AI datacenter expansion and capex'}
+        first=SimpleNamespace(status_code=200,content=b'<rss/>',headers={'ETag':'"disk-v1"'},raise_for_status=Mock())
+        not_modified=SimpleNamespace(status_code=304,content=b'',headers={},raise_for_status=Mock())
+        with tempfile.TemporaryDirectory() as folder, patch.object(main,'DB',Path(folder)/'events.sqlite3'), \
+             patch.object(data_service,'_FEED_CACHE',{}), \
+             patch.object(data_service,'http_get',side_effect=[first,not_modified]) as request, \
+             patch.object(data_service.feedparser,'parse',return_value=SimpleNamespace(entries=[entry],bozo=False)) as parse:
+            main.init_db()
+            initial,_=data_service._feed('Oracle IR',url,{'_persist_feed_cache':True},main.sentiment_score,main.impact_level,['ORCL'])
+            data_service._FEED_CACHE.clear()
+            restored,status=data_service._feed('Oracle IR',url,{'_persist_feed_cache':True},main.sentiment_score,main.impact_level,['ORCL'])
+        self.assertEqual(initial,restored)
+        self.assertTrue(status['cached'])
+        self.assertEqual(request.call_args_list[1].kwargs['headers']['If-None-Match'],'"disk-v1"')
+        parse.assert_called_once()
+
+    def test_fund_and_index_quotes_do_not_create_redundant_company_news_feeds(self):
+        calls=[]
+        def fake_feed(source,url,*args):
+            calls.append(source)
+            return [],{'source':source,'status':'ok','count':0}
+        with patch.object(data_service,'_feed',side_effect=fake_feed):
+            data_service.fetch_news(['QQQ','SPY','SMH','VGT','ORCL'],[],{},main.sentiment_score,main.impact_level)
+        self.assertIn('Google News · ORCL',calls)
+        self.assertFalse(any(name in calls for name in ('Google News · QQQ','Google News · SPY','Google News · SMH','Google News · VGT')))
+
     def test_offline_sources_return_visible_errors(self):
-        with patch('data_service.requests.get',side_effect=data_service.requests.Timeout):
+        with patch('data_service.http_get',side_effect=data_service.requests.Timeout):
             rows,health=data_service.fetch_news([], [('Test','https://example.com/feed')],{},
                                                 main.sentiment_score,main.impact_level)
         self.assertEqual(rows,[])

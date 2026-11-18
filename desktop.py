@@ -40,6 +40,7 @@ NEW_YORK = ZoneInfo('America/New_York')
 MARKET_SAMPLE=('IWM','RSP','XLF','XLE','XLI','XLY')
 HISTORY_EXTRA=tuple(dict.fromkeys((*MARKET_SAMPLE,*data_service.SECTOR_TICKERS)))
 MODEL_INPUTS=securities.MODEL_INPUTS
+MARKET_SLOT_LIMIT=8
 
 
 def local_time(value):
@@ -305,6 +306,7 @@ class DesktopAPI:
                 if force:self.intraday_pending=True
                 return
             self.intraday_busy=True;self.intraday_status='正在更新分钟行情';config=copy.deepcopy(self.settings)
+            config['_intraday_tickers']=self.get_market_slots()['slots']
             self.revision+=1
         def work():
             try:
@@ -340,7 +342,7 @@ class DesktopAPI:
     def _refresh_public_async(self):
         with self.lock:
             if self.public_busy:return
-            self.public_busy=True;config=copy.deepcopy(self.settings)
+            self.public_busy=True;config={**copy.deepcopy(self.settings),'_persist_feed_cache':True}
         def apply(rows):
             main.save_events(rows)
             with self.lock:self.news=merge_news(self.news,rows);self.revision+=1
@@ -378,6 +380,7 @@ class DesktopAPI:
             if self.busy:return {'ok':True,'message':'已重新计算本地行情，网络同步正在进行'}
             self.busy=True;self.status='正在更新行情与研判';self.revision+=1
             config=copy.deepcopy(self.settings)
+            config['_persist_feed_cache']=True
             config['_quote_tickers']=self._quote_tickers()
             config['_history_tickers']=self._history_tickers()
             config['_pe_cached']=copy.deepcopy(self.pe_histories)
@@ -493,6 +496,7 @@ class DesktopAPI:
             texts=[text for article in prioritized[:80]
                    for text in (article.get('title',''),article.get('summary','')) if text]
             config=copy.deepcopy(self.settings)
+            config['_persist_feed_cache']=True
         last_report=[0.0]
         def progress(done,total):
             now=time.monotonic()
@@ -579,17 +583,17 @@ class DesktopAPI:
         try:
             payload=json.loads(path.read_text(encoding='utf-8'))
             slots=payload.get('slots')
-            if isinstance(slots,list) and len(slots)<=4 and all(
+            if isinstance(slots,list) and len(slots)<=MARKET_SLOT_LIMIT and all(
                 isinstance(ticker,str) and re.fullmatch(r'[A-Z0-9.^-]{1,15}',ticker) for ticker in slots
             ) and len(set(slots))==len(slots):
-                return {'ok':True,'slots':slots}
+                return {'ok':True,'slots':slots,'limit':MARKET_SLOT_LIMIT}
         except (OSError,ValueError,TypeError,AttributeError):
             pass
-        return {'ok':True,'slots':['QQQ','SPY','SMH','ORCL']}
+        return {'ok':True,'slots':['QQQ','SPY','SMH','ORCL'],'limit':MARKET_SLOT_LIMIT}
 
     def save_market_slots(self,slots):
-        if not isinstance(slots,list) or len(slots)>4:
-            return {'ok':False,'message':'研判标的最多四个'}
+        if not isinstance(slots,list) or len(slots)>MARKET_SLOT_LIMIT:
+            return {'ok':False,'message':f'市场研判最多添加 {MARKET_SLOT_LIMIT} 个标的'}
         cleaned=[str(ticker).strip().upper() for ticker in slots]
         if any(not re.fullmatch(r'[A-Z0-9.^-]{1,15}',ticker) for ticker in cleaned) or len(set(cleaned))!=len(cleaned):
             return {'ok':False,'message':'证券代码无效或重复'}
@@ -599,9 +603,11 @@ class DesktopAPI:
             path.parent.mkdir(parents=True,exist_ok=True)
             temporary.write_text(json.dumps({'slots':cleaned},ensure_ascii=False),encoding='utf-8')
             temporary.replace(path)
-            return {'ok':True,'slots':cleaned}
+            result={'ok':True,'slots':cleaned,'limit':MARKET_SLOT_LIMIT}
         except OSError:
             return {'ok':False,'message':'研判位保存失败'}
+        self._refresh_intraday_async(force=True)
+        return result
 
     def get_market_rsi(self,ticker,asof):
         ticker=str(ticker).strip().upper()

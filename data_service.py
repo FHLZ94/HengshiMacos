@@ -2,6 +2,8 @@
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import copy
 import csv
+import hashlib
+import json
 from datetime import datetime, timezone, timedelta
 from email.utils import parsedate_to_datetime
 from io import StringIO
@@ -31,7 +33,8 @@ CNN_HEADERS = {
     'Accept': 'application/json, text/plain, */*',
 }
 SP500_LIST = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'assets' / 'sp500_constituents.csv'
-NETWORK_LIMIT = threading.BoundedSemaphore(6)
+NETWORK_LIMIT = threading.BoundedSemaphore(10)
+_HTTP_LOCAL = threading.local()
 SECTOR_TICKERS = ('XLK','SMH','XLV','XLP','XLU','XLY','XLF','XLE','XLI','XLC','XLRE','XLB','TLT','GLD')
 ETF_TICKERS = securities.FUND_CODES
 INTELLIGENCE_TERMS = ('semiconductor','chip','ai infrastructure','artificial intelligence','data center','datacenter',
@@ -44,17 +47,34 @@ INTELLIGENCE_TERMS = ('semiconductor','chip','ai infrastructure','artificial int
                       '共封装光学','硅光','光互连','晶圆','封装','出口管制','商务部','白宫','国会','供应链','资本开支',
                       '云厂商','液冷','电力接入','算力服务器','存储带宽','先进制程')
 IRRELEVANT_TERMS = ('terrorism','terrorist','terrorist attack','murder','crime','poland investigation','poland probe',
-                     'celebrity','sports','entertainment','恐怖主义','恐袭','谋杀','犯罪','波兰调查','名人','体育','娱乐')
+                     'celebrity','sports','entertainment','settlers','settlement expansion','settlements in israel',
+                     '以色列定居者','定居点','定居者','恐怖主义','恐袭','谋杀','犯罪','波兰调查','名人','体育','娱乐')
+CORE_TECH_TERMS=('semiconductor','chip','artificial intelligence','ai infrastructure','data center','datacenter',
+                 'advanced packaging','chiplet','hbm','memory','optical interconnect','photonic','foundry',
+                 'co-packaged optics','silicon photonics','optical i/o','cpo','cowos','gpu','accelerator',
+                 'hyperscaler','liquid cooling','ai server','cloud compute','nvidia','amd','tsmc','asml',
+                 'broadcom','marvell','micron','intel','lumentum','coherent','sk hynix','microsoft','google',
+                 'amazon','oracle','meta','半导体','芯片','人工智能','算力','数据中心','先进封装','芯粒','存储',
+                 '光通信','光模块','共封装光学','硅光','光互连','晶圆','云厂商','液冷','算力服务器','存储带宽')
+MACRO_TECH_TRANSMISSION=('nasdaq','s&p 500','technology stocks','tech stocks','growth stocks','mega-cap tech',
+                         'ai stocks','chip stocks','semiconductor stocks','科技股','纳指','标普500','大型科技')
+FEED_MAX_AGE=timedelta(hours=12)
 
 
 def http_get(*args, **kwargs):
     with NETWORK_LIMIT:
-        return requests.get(*args, **kwargs)
+        session=getattr(_HTTP_LOCAL,'session',None)
+        if session is None:
+            session=requests.Session();session.headers.update(HEADERS);_HTTP_LOCAL.session=session
+        return session.get(*args, **kwargs)
 
 
 def http_post(*args, **kwargs):
     with NETWORK_LIMIT:
-        return requests.post(*args, **kwargs)
+        session=getattr(_HTTP_LOCAL,'session',None)
+        if session is None:
+            session=requests.Session();session.headers.update(HEADERS);_HTTP_LOCAL.session=session
+        return session.post(*args, **kwargs)
 ALIASES = {
     'ORCL': ('ORACLE',), 'MRVL': ('MARVELL',), 'LITE': ('LUMENTUM',),
     'INTC': ('INTEL',), 'AVGO': ('BROADCOM',), 'QQQM': ('INVESCO NASDAQ 100 ETF',),
@@ -139,16 +159,57 @@ def clean(value):
 
 
 def intelligence_relevant(title, summary, tickers=()):
-    """Keep stories with a credible path to the user's AI/semiconductor book."""
+    """Keep AI and large-cap tech catalysts; macro needs an explicit market channel."""
     text=(title+' '+summary).casefold()
-    if tickers:return True
-    has_chain=any(term.casefold() in text for term in INTELLIGENCE_TERMS)
-    if not has_chain:return False
+    symbols=set(tickers or ())
+    relevant_symbols=(symbols & (set(SMH_RELATED)|set(INTELLIGENCE_TICKERS)|
+        {ticker for ticker in symbols if ticker not in {'QQQ','QQQM','SPY','VGT','SMH','^VIX'}}))
+    has_tech=bool(relevant_symbols) or any(term.casefold() in text for term in CORE_TECH_TERMS)
+    macro_terms=('federal reserve','fed rate','interest rate','cpi','pce','treasury yield','tariff',
+                 'export control','export ban','commerce department','white house','congress','senate',
+                 '美联储','利率','通胀','国债收益率','关税','出口管制','商务部','白宫','国会','参议院')
+    has_macro=any(term.casefold() in text for term in macro_terms)
+    has_market_channel=any(term.casefold() in text for term in MACRO_TECH_TRANSMISSION)
+    if not has_tech and not (has_macro and has_market_channel):return False
     if any(term.casefold() in text for term in IRRELEVANT_TERMS):
-        # Generic crime/geopolitical stories stay out unless the same text also
-        # names an explicit technology, supply-chain or policy transmission.
-        return any(term.casefold() in text for term in ('semiconductor','chip','ai','data center','export control','tariff','半导体','芯片','人工智能','数据中心','出口管制','供应链'))
+        explicit_channel=any(term in text for term in ('semiconductor','chip','ai','data center',
+            'export control','export ban','tariff','半导体','芯片','人工智能','数据中心','出口管制','关税'))
+        if not explicit_channel:return False
     return True
+
+
+def _feed_cache_key(url,watchlist):
+    identity=json.dumps((url,sorted(set(watchlist))),separators=(',',':'),ensure_ascii=False)
+    return hashlib.sha256(identity.encode('utf-8')).hexdigest()
+
+
+def _load_feed_cache(key,config):
+    with _FEED_CACHE_LOCK:
+        cached=_FEED_CACHE.get(key)
+    if cached:return copy.deepcopy(cached)
+    if not config.get('_persist_feed_cache'):return None
+    try:
+        import main
+        cached=main.load_feed_cache(key)
+    except Exception:
+        return None
+    if cached:
+        try:cached['fetched_at']=datetime.fromisoformat(cached['fetched_at'])
+        except (KeyError,TypeError,ValueError):return None
+        with _FEED_CACHE_LOCK:_FEED_CACHE[key]=copy.deepcopy(cached)
+        return cached
+    return None
+
+
+def _save_feed_cache(key,entry,config):
+    with _FEED_CACHE_LOCK:_FEED_CACHE[key]=copy.deepcopy(entry)
+    if config.get('_persist_feed_cache'):
+        try:
+            import main
+            payload={**entry,'fetched_at':entry['fetched_at'].isoformat(timespec='seconds')}
+            main.save_feed_cache(key,payload)
+        except Exception:
+            pass
 
 
 def event_profile(source, title, impact):
@@ -224,17 +285,19 @@ def ticker_matches(text, watchlist, config=None):
 def _feed(source, url, config, sentiment_fn, impact_fn, watchlist):
     started = time.monotonic()
     proxy = configured_proxy(config, for_google='news.google.com' in url)
-    with _FEED_CACHE_LOCK:
-        cached=_FEED_CACHE.get(url)
-        cache=copy.deepcopy(cached) if cached else None
+    cache_key=_feed_cache_key(url,watchlist)
+    cache=_load_feed_cache(cache_key,config)
+    cache=copy.deepcopy(cache) if cache else None
     request_headers=dict(HEADERS)
     if cache:
         if cache.get('etag'):request_headers['If-None-Match']=cache['etag']
         if cache.get('last_modified'):request_headers['If-Modified-Since']=cache['last_modified']
     try:
-        response = http_get(url, timeout=(4,7), headers=request_headers, proxies=proxy)
+        response = http_get(url, timeout=(3,6), headers=request_headers, proxies=proxy)
         if getattr(response,'status_code',200)==304 and cache:
             rows=cache.get('rows',[])
+            cache['fetched_at']=datetime.now(timezone.utc)
+            _save_feed_cache(cache_key,cache,config)
             return copy.deepcopy(rows), {'source':source,'status':'ok','count':len(rows),
                 'latency_ms':round((time.monotonic()-started)*1000),
                 'checked_at':datetime.now(timezone.utc).isoformat(timespec='seconds'),'cached':True}
@@ -266,9 +329,8 @@ def _feed(source, url, config, sentiment_fn, impact_fn, watchlist):
                          'sentiment': score, 'label': label,
                          'tickers': tickers})
         headers=getattr(response,'headers',{}) or {}
-        with _FEED_CACHE_LOCK:
-            _FEED_CACHE[url]={'rows':copy.deepcopy(rows),'etag':headers.get('ETag'),
-                'last_modified':headers.get('Last-Modified'),'fetched_at':datetime.now(timezone.utc)}
+        _save_feed_cache(cache_key,{'rows':copy.deepcopy(rows),'etag':headers.get('ETag'),
+            'last_modified':headers.get('Last-Modified'),'fetched_at':datetime.now(timezone.utc)},config)
         return rows, {'source': source, 'status': 'ok', 'count': len(rows),
                       'latency_ms': round((time.monotonic()-started)*1000), 'checked_at': datetime.now(timezone.utc).isoformat(timespec='seconds')}
     except requests.Timeout:
@@ -291,12 +353,12 @@ def fetch_news(watchlist, feeds, config, sentiment_fn, impact_fn, on_batch=None)
     sources = list(feeds)
     coverage=list(dict.fromkeys([*watchlist,*INTELLIGENCE_TICKERS]))
     for ticker in watchlist:
-        if ticker.startswith('^'):
+        if ticker.startswith('^') or securities.is_fund(ticker,config):
             continue
         query = quote(f'"{ticker}" stock OR {ticker} company')
         sources.append((f'Google News · {ticker}', f'https://news.google.com/rss/search?q={query}&hl=en-US&gl=US&ceid=US:en'))
     all_rows, health = [], []
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=10) as pool:
         futures = [pool.submit(_feed, name, url, config, sentiment_fn, impact_fn, coverage) for name, url in sources]
         for future in as_completed(futures):
             rows, state = future.result()

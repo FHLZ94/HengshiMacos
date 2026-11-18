@@ -1,4 +1,5 @@
 import threading, time, json, os, re, queue, sqlite3, webbrowser, logging, sys
+from contextlib import closing
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -16,7 +17,7 @@ APP_DIR.mkdir(parents=True, exist_ok=True)
 logging.basicConfig(filename=str(APP_DIR / 'application.log'), level=logging.INFO,
                     format='%(asctime)s %(levelname)s %(message)s', encoding='utf-8')
 DB = APP_DIR / 'events.sqlite3'
-APP_VERSION = '1.3.2'
+APP_VERSION = '1.3.3'
 CONFIG = APP_DIR / 'settings.json'
 ICON = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent)) / 'nexus.ico'
 DEFAULT_WATCHLIST = list(securities.DEFAULT_TRACKING)
@@ -53,11 +54,12 @@ MED = {'earnings','guidance','capex','acquisition','merger','offering','dilution
 
 
 def init_db():
-    with sqlite3.connect(DB) as con:
+    with closing(sqlite3.connect(DB)) as con, con:
         con.execute("CREATE TABLE IF NOT EXISTS events (id INTEGER PRIMARY KEY, title TEXT, link TEXT UNIQUE, source TEXT, published TEXT, summary TEXT, impact TEXT, sentiment INTEGER, label TEXT, tickers TEXT, first_seen TEXT)")
         con.execute("CREATE INDEX IF NOT EXISTS idx_events_seen ON events(first_seen)")
         con.execute("CREATE TABLE IF NOT EXISTS quote_cache (ticker TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at TEXT NOT NULL)")
         con.execute("CREATE TABLE IF NOT EXISTS source_health (source TEXT PRIMARY KEY, payload TEXT NOT NULL, checked_at TEXT NOT NULL)")
+        con.execute("CREATE TABLE IF NOT EXISTS feed_cache (cache_key TEXT PRIMARY KEY, payload TEXT NOT NULL, cached_at TEXT NOT NULL)")
         con.execute("CREATE TABLE IF NOT EXISTS positions (ticker TEXT PRIMARY KEY, quantity REAL NOT NULL CHECK(quantity > 0), cost REAL NOT NULL CHECK(cost >= 0), updated_at TEXT NOT NULL)")
         con.execute("CREATE TABLE IF NOT EXISTS estimate_cache (ticker TEXT PRIMARY KEY, payload TEXT NOT NULL, fetched_at TEXT NOT NULL)")
         con.execute("CREATE TABLE IF NOT EXISTS valuation_history (ticker TEXT NOT NULL, period TEXT NOT NULL, observed_date TEXT NOT NULL, price REAL NOT NULL, eps REAL NOT NULL, pe REAL NOT NULL, PRIMARY KEY(ticker,period,observed_date))")
@@ -251,6 +253,18 @@ def load_market_extra(name):
     return json.loads(row[0]) if row else None
 
 
+def load_feed_cache(cache_key):
+    with closing(sqlite3.connect(DB,timeout=15)) as con, con:
+        row=con.execute('SELECT payload FROM feed_cache WHERE cache_key=?',(cache_key,)).fetchone()
+    return json.loads(row[0]) if row else None
+
+
+def save_feed_cache(cache_key,payload):
+    with closing(sqlite3.connect(DB,timeout=15)) as con, con:
+        con.execute('INSERT OR REPLACE INTO feed_cache VALUES (?,?,?)',
+                    (cache_key,json.dumps(payload,ensure_ascii=False),payload.get('fetched_at','')))
+
+
 def save_research_observations(model,risks,quotes,intraday=None):
     if not model or not model.get('available'):return
     import hashlib
@@ -402,6 +416,7 @@ def extract_tickers(text, watchlist):
 
 
 def fetch_news(watchlist, config, on_batch=None):
+    config={**config,'_persist_feed_cache':True}
     rows, health = data_service.fetch_news(watchlist, FEEDS, config, sentiment_score, impact_level,
                                            on_batch=on_batch)
     save_events(rows)

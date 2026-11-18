@@ -9,7 +9,7 @@ from queue import Queue, Empty
 
 import requests
 
-from data_service import configured_proxy
+from data_service import configured_proxy,http_get
 
 SEPARATOR='\n@@@\n'
 
@@ -55,9 +55,9 @@ class TranslationStore:
     def translate_group(self,texts,config):
         if not texts:return []
         query=SEPARATOR.join(texts)
-        response=requests.get('https://translate.googleapis.com/translate_a/single',
-                              params={'client':'gtx','sl':'auto','tl':'zh-CN','dt':'t','q':query},
-                              proxies=configured_proxy(config,for_google=True),timeout=(5,18))
+        response=http_get('https://translate.googleapis.com/translate_a/single',
+                          params={'client':'gtx','sl':'auto','tl':'zh-CN','dt':'t','q':query},
+                          proxies=configured_proxy(config,for_google=True),timeout=(4,12))
         response.raise_for_status()
         payload=json.loads(response.content.decode('utf-8'))
         translated=''.join(part[0] for part in payload[0] if part and part[0])
@@ -71,7 +71,7 @@ class TranslationStore:
         known=self.get_many(unique)
         pending=[text for text in unique if text not in known]
         done=0
-        groups=[pending[start:start+5] for start in range(0,len(pending),5)]
+        groups=[pending[start:start+8] for start in range(0,len(pending),8)]
         def process(group):
             try:
                 return group,self.translate_group(group,config)
@@ -90,7 +90,7 @@ class TranslationStore:
                 try:group=jobs.get_nowait()
                 except Empty:return
                 results.put(process(group))
-        for _ in range(min(5,len(groups))):
+        for _ in range(min(8,len(groups))):
             threading.Thread(target=worker,daemon=True).start()
         for _ in groups:
             group,translations=results.get()

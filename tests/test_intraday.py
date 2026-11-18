@@ -1,10 +1,21 @@
 import unittest,math
-from unittest.mock import patch
+from unittest.mock import patch,Mock
 from datetime import datetime,timedelta,timezone
 from zoneinfo import ZoneInfo
 import intraday_signals,market_model,event_risk
+from types import SimpleNamespace
 
 class IntradayTests(unittest.TestCase):
+    def test_minute_fetch_uses_configured_market_slots(self):
+        response=SimpleNamespace(raise_for_status=Mock(),json=Mock(return_value={}))
+        parsed={'ticker':'unused','bars':[]}
+        with patch.object(intraday_signals.data_service,'http_get',return_value=response) as request, \
+             patch.object(intraday_signals,'parse_chart',return_value=parsed):
+            rows,health=intraday_signals.fetch({'_intraday_tickers':['QQQ','NVDA','AMD']})
+        self.assertEqual(set(rows),{'QQQ','NVDA','AMD'})
+        self.assertEqual(health['missing'],[])
+        self.assertEqual(request.call_count,6)
+
     def bars(self,closes):
         start=int(datetime(2026,11,2,14,30,tzinfo=timezone.utc).timestamp())
         return [{'time':start+i*900,'end':start+(i+1)*900,'open':c,'high':c+.5,'low':c-.5,'close':c,'volume':1000} for i,c in enumerate(closes)]
