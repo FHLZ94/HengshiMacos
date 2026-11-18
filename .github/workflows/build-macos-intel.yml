@@ -46,7 +46,7 @@ jobs:
           tests.test_signals tests.test_translation_service tests.test_valuation_history
           tests.test_valuation tests.test_event_intelligence tests.test_desktop_state
           tests.test_research_revision tests.test_tracking tests.test_unified_research tests.test_intraday
-          tests.test_backend_startup
+          tests.test_backend_startup tests.test_mac_bundle
       - name: 验证 UI2 市场卡片数据映射
         run: node tests/market-cards.test.cjs
       - name: 构建 ${{ matrix.arch }} Python 后端
