@@ -31,6 +31,8 @@ Intel 与 Apple Silicon Mac 改用目录式 Python 后端，避免首次启动�
 
 Windows 运行 `installer/衡势-1.3.2-Windows-安装包.exe`，按标准安装向导选择位置与桌面快捷方式。Intel Mac 安装文件为 `衡势-1.3.2-macOS-Intel.dmg`；M系列 Mac 安装文件为 `衡势-1.3.2-macOS-Apple-Silicon.dmg`。
 
+macOS 打包后会重算并校验 `app.asar` 头部 SHA-256 与 `Info.plist` 的 Electron 完整性字段，避免应用因完整性哈希不一致而启动失败。
+
 Windows 用户数据目录为 `%APPDATA%/AIMarketIntelligence/`；macOS 为应用数据目录中的衡势文件夹。连接设置在右上角设置按钮。可自动探测本地代理 `127.0.0.1:7890`，也可填写显式代理。基础功能无需付费金融API或本地大模型；可选 Ollama 用于进一步分析。
 
 ## 构建与检验

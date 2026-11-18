@@ -14,7 +14,7 @@ vm.runInContext(`state = {
   ],
   actions: [{ticker:'QQQM',name:'纳斯达克100低费率基金',current_price:282.25,upside_pct:null,
     fund_valuation:{percentile:57.5},is_fund:true,advice:{action:'持有观察',watch_zone:[267.25,273.78],risk_price:261.07}}],
-  market:{live_quotes:{QQQ:{price:582.4,label:'延迟盘中报价',asof:'11-17 23:12 北京时间'}},
+  market:{live_quotes:{QQQ:{price:582.4,change:0.42,session:'post',session_change_pct:-0.31,label:'延迟盘后报价',asof:'11-17 23:12 北京时间'}},
     live_positions:{QQQ:{available:true,percentile:18.6,samples:430}},intraday_status:'分钟行情已更新',intraday_busy:false}
 }`, context);
 
@@ -35,6 +35,8 @@ assert.match(card, /5分 <b>27\.72<\/b>/);
 assert.match(card, /15分 <b>31\.80<\/b>/);
 assert.match(card, /30分 <b>42\.10<\/b>/);
 assert.match(card, /历史下侧 <b>18\.6%<\/b>/);
+assert.match(card, /日涨跌 \+0\.42%/);
+assert.match(card, /盘后 -0\.31%/);
 assert.match(card, /class="signal-status ">短线 · RSI常态<\/span>/);
 assert.match(card, /上个交易时段/);
 assert.match(card, /11\/17 15:10 美东/);

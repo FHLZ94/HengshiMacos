@@ -17,10 +17,12 @@ def asar_header_hash(path):
         pickle=archive.read(pickle_size)
     if len(pickle)!=pickle_size:
         raise ValueError('ASAR header is truncated')
-    string_size=struct.unpack_from('<I',pickle,0)[0]
-    if string_size<=0 or string_size>len(pickle)-4:
+    if len(pickle)<8:
+        raise ValueError('ASAR nested header is truncated')
+    string_size=struct.unpack_from('<I',pickle,4)[0]
+    if string_size<=0 or string_size>len(pickle)-8:
         raise ValueError('ASAR header string size is invalid')
-    header=pickle[4:4+string_size]
+    header=pickle[8:8+string_size]
     return sha256(header).hexdigest()
 
 

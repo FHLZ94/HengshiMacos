@@ -13,6 +13,12 @@ class DesktopStateTests(unittest.TestCase):
         self.assertEqual(quote_time_label('2026-11-17T15:10:00-05:00'),'11-18 04:10 北京时间')
         self.assertEqual(quote_time_label('11/17/26 03:10 PM EST'),'11-18 04:10 北京时间')
 
+    def test_quote_time_label_uses_source_time_not_retrieval_time(self):
+        quote={'source_time':'2026-11-17T15:10:00-05:00','fetched_at':'2026-11-18T02:00:00+00:00'}
+        label=quote_time_label(quote['source_time'])
+        self.assertIn('04:10 北京时间',label)
+        self.assertNotIn('02:00',label)
+
     def test_quote_freshness_uses_source_time_and_requires_time_precision_while_open(self):
         now=datetime(2026,11,17,10,0,tzinfo=timezone(timedelta(hours=-5)))
         recent={'session':'regular','market_status':'Open','source_time':'2026-11-17T09:50:00-05:00'}

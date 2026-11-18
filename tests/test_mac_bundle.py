@@ -10,9 +10,10 @@ from tools.fix_mac_asar_integrity import asar_header_hash,update_bundle
 
 class MacBundleTests(unittest.TestCase):
     def make_asar(self,path,header):
-        string=struct.pack('<I',len(header))+header
-        string+=b'\0'*((-len(string))%4)
-        path.write_bytes(struct.pack('<II',4,len(string))+string+b'payload')
+        padding=b'\0'*((-len(header))%4)
+        inner_payload=struct.pack('<I',len(header))+header+padding
+        inner_pickle=struct.pack('<I',len(inner_payload))+inner_payload
+        path.write_bytes(struct.pack('<II',4,4+len(inner_pickle))+inner_pickle+b'payload')
 
     def test_updates_and_verifies_the_asar_header_hash(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -38,6 +39,16 @@ class MacBundleTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as folder:
             archive=Path(folder)/'app.asar';archive.write_bytes(b'bad')
             with self.assertRaises(ValueError):asar_header_hash(archive)
+
+    def test_header_hash_excludes_pickle_alignment_padding(self):
+        with tempfile.TemporaryDirectory() as folder:
+            archive=Path(folder)/'app.asar'
+            header=b'{"files":{}}'
+            padding=b'\0'*((-len(header))%4)
+            inner_payload=struct.pack('<I',len(header))+header+padding
+            inner_pickle=struct.pack('<I',len(inner_payload))+inner_payload
+            archive.write_bytes(struct.pack('<II',4,4+len(inner_pickle))+inner_pickle+b'data')
+            self.assertEqual(asar_header_hash(archive),hashlib.sha256(header).hexdigest())
 
 
 if __name__=='__main__':unittest.main()
