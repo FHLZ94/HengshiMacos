@@ -108,6 +108,7 @@ def indicators(bars):
 
 
 def frame(bars,minutes):
+    bars=sorted(bars,key=lambda bar:bar['time'])
     if len(bars)<60:return {'available':False,'minutes':minutes,'reason':'已完成样本不足60根'}
     rsi,dif,hist=indicators(bars);rsi1=wilder_rsi([b['close'] for b in bars],6);last=len(bars)-1
     pivots=[i for i in range(max(35,last-100),last-1)

@@ -24,7 +24,7 @@ class MacBundleTests(unittest.TestCase):
             archive=resources/'app.asar'
             self.make_asar(archive,header)
             info=bundle/'Contents'/'Info.plist'
-            info.write_bytes(plistlib.dumps({'CFBundleVersion':'1.3.3',
+            info.write_bytes(plistlib.dumps({'CFBundleVersion':'1.3.4',
                 'ElectronAsarIntegrity':{'Resources/app.asar':{'algorithm':'SHA256','hash':'stale'},
                                          'Resources/default_app.asar':{'algorithm':'SHA256','hash':'keep'}}}))
             expected=hashlib.sha256(header).hexdigest()
@@ -33,7 +33,7 @@ class MacBundleTests(unittest.TestCase):
             with info.open('rb') as stream:result=plistlib.load(stream)
             self.assertEqual(result['ElectronAsarIntegrity']['Resources/app.asar']['hash'],expected)
             self.assertEqual(result['ElectronAsarIntegrity']['Resources/default_app.asar']['hash'],'keep')
-            self.assertEqual(result['CFBundleVersion'],'1.3.3')
+            self.assertEqual(result['CFBundleVersion'],'1.3.4')
 
     def test_rejects_truncated_archive_header(self):
         with tempfile.TemporaryDirectory() as folder:

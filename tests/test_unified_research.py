@@ -101,7 +101,18 @@ class EventRiskTests(unittest.TestCase):
         minute={'SMH':{'available':True,'stale':False,'rsi_oversold_score':.8,'rsi_overbought_score':0}}
         positions={'SMH':{'available':True,'quote_stale':False,'price':80,'percentile':42.0}}
         env=event_risk.trading_environment(m,risks,intraday=minute,live_positions=positions)
-        self.assertEqual(env['SMH']['label'],'短线超卖，历史位置未到极低')
+        self.assertEqual(env['SMH']['label'],'短线超卖，历史位置未到低位')
+
+    def test_fresh_oversold_rsi_is_not_replaced_by_daily_overbought_when_position_is_missing(self):
+        m=self.model()
+        m['targets']['SMH']['setup'].update(overbought=True,lower_tail_pct=98,upper_tail_pct=2)
+        risks=event_risk.assess_events([],now=self.now)
+        minute={'SMH':{'available':True,'stale':False,'rsi_oversold_score':.8,
+            'rsi_overbought_score':0,'latest_asof':'2026-11-08T15:00:00-05:00'}}
+        env=event_risk.trading_environment(m,risks,intraday=minute)
+        self.assertEqual(env['SMH']['label'],'短线超卖，价格分位待核')
+        self.assertIn('暂不生成买入动作',env['SMH']['reason'])
+        self.assertNotIn('超买',env['SMH']['label'])
 
 
 class TwoMarketModelTests(unittest.TestCase):

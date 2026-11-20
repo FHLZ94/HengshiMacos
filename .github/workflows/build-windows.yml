@@ -31,7 +31,7 @@ jobs:
           python -m PyInstaller --noconfirm --windowed --onefile
           --icon nexus.ico --add-data 'frontend;frontend'
           --add-data 'assets/sp500_constituents.csv;assets'
-          --version-file version_info.txt --name 衡势-1.3.3
+          --version-file version_info.txt --name 衡势-1.3.4
           --distpath dist/release desktop.py
       - name: 安装 Inno Setup
         run: choco install innosetup --no-progress -y
@@ -41,5 +41,5 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: 衡势-Windows-安装包
-          path: installer/衡势-1.3.3-Windows-安装包.exe
+          path: installer/衡势-1.3.4-Windows-安装包.exe
           if-no-files-found: error

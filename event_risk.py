@@ -146,12 +146,16 @@ def trading_environment(model,event_risk,metrics=None,intraday=None,live_positio
             label='高位超买并滞涨，放缓追价';reason='5/15/30分钟 RSI 加权分达到超买区，最新价同时处历史高位且推进减弱'
         elif minute_fresh and overbought_confirmed:
             label='短线超买，避免追价';reason=f'5/15/30分钟 RSI 加权分 {overbought_score:.2f}（权重40%/40%/20%）；结合最新价历史分位 {history_rank:.1f}% 控制追价'
-        elif uses_live_position and minute_fresh and oversold_confirmed and history_rank<=5 and risk['risk_score']<30:
-            label='短线超卖且历史极低，可小额分批';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}（权重40%/40%/20%），最新价处历史下侧 {history_rank:.1f}%；事件风险未达否决阈值，仍须遵守失效价'
-        elif uses_live_position and minute_fresh and oversold_confirmed and history_rank<=15 and risk['risk_score']<30:
+        elif minute_fresh and oversold_confirmed and not uses_live_position:
+            label='短线超卖，价格分位待核';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}（权重40%/40%/20%）；当前价历史分位不可用，暂不生成买入动作'
+        elif minute_fresh and oversold_confirmed and risk['risk_score']>=30:
+            label='短线超卖，事件风险偏高';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}，但事件风险分 {risk["risk_score"]:.1f}；先核实风险，不触发买入动作'
+        elif minute_fresh and oversold_confirmed and history_rank<=5:
+            label='短线超卖且历史极低，可小额分批';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}（权重40%/40%/20%），最新价处历史下侧 {history_rank:.1f}%；事件风险可控，仍须遵守失效价'
+        elif minute_fresh and oversold_confirmed and history_rank<=15:
             label='短线超卖与历史偏低共振，小额关注';reason=f'5/15/30分钟 RSI 加权超卖分 {oversold_score:.2f}，最新价处历史下侧 {history_rank:.1f}%；分批观察，不代表底部确认'
-        elif uses_live_position and minute_fresh and oversold_confirmed:
-            label='短线超卖，历史位置未到极低';reason=f'分钟 RSI 加权超卖分 {oversold_score:.2f}，但最新价历史下侧仅 {history_rank:.1f}%；等待价格位置与承接进一步确认'
+        elif minute_fresh and oversold_confirmed:
+            label='短线超卖，历史位置未到低位';reason=f'分钟 RSI 加权超卖分 {oversold_score:.2f}，但最新价历史下侧为 {history_rank:.1f}%；等待价格位置与承接进一步确认'
         elif uses_live_position and history_rank<=5 and not oversold_confirmed:
             label='最新价处历史极低，等待RSI确认';reason=f'最新价历史下侧 {history_rank:.1f}%，5/15分钟 RSI 尚未共同进入超卖区；暂不把低价单独当作买点'
         elif uses_live_position and history_rank>=95:

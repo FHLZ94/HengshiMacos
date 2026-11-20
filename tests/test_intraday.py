@@ -6,6 +6,19 @@ import intraday_signals,market_model,event_risk
 from types import SimpleNamespace
 
 class IntradayTests(unittest.TestCase):
+    def test_rsi1_direction_tracks_consecutive_price_loss_and_gain(self):
+        falling=[100-i for i in range(80)]
+        rising=list(reversed(falling))
+        self.assertEqual(intraday_signals.wilder_rsi(falling,6)[-1],0)
+        self.assertEqual(intraday_signals.wilder_rsi(rising,6)[-1],100)
+
+    def test_frame_normalizes_reversed_intraday_bar_order_before_rsi(self):
+        bars=[{**bar,'end':bar['time']+900} for bar in self.sessions(5)]
+        forward=intraday_signals.frame(bars,15)
+        reverse=intraday_signals.frame(list(reversed(bars)),15)
+        self.assertEqual(reverse['rsi1'],forward['rsi1'])
+        self.assertEqual(reverse['rsi14'],forward['rsi14'])
+
     def test_minute_fetch_uses_configured_market_slots(self):
         response=SimpleNamespace(raise_for_status=Mock(),json=Mock(return_value={}))
         parsed={'ticker':'unused','bars':[]}
